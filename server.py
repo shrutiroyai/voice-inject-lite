@@ -51,6 +51,7 @@ app.add_middleware(
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
 VOCAB_PATH = CONFIG_DIR / "vocabulary.json"
+SNIPPETS_PATH = CONFIG_DIR / "snippets.json"
 CONFIG_DIR.mkdir(exist_ok=True)
 
 active_connections = []
@@ -119,6 +120,19 @@ async def get_vocabulary():
 @app.post("/api/vocabulary")
 async def update_vocabulary(data: dict):
     with open(VOCAB_PATH, "w") as f:
+        json.dump(data, f)
+    return {"success": True}
+
+@app.get("/api/snippets")
+async def get_snippets():
+    if SNIPPETS_PATH.exists():
+        with open(SNIPPETS_PATH) as f:
+            return json.load(f)
+    return {"entries": []}
+
+@app.post("/api/snippets")
+async def update_snippets(data: dict):
+    with open(SNIPPETS_PATH, "w") as f:
         json.dump(data, f)
     return {"success": True}
 
@@ -343,6 +357,20 @@ async def get_ui():
                 </div>
             </div>
 
+            <div class="config-section">
+                <h3>Snippets (Text Expansion)</h3>
+                <p style="font-size: 12px; color: #666; margin-bottom: 12px;">Define keywords that expand into full text (e.g., 'my email').</p>
+                
+                <div id="snippetList" style="margin-bottom: 15px;">
+                    <!-- Snippet rows will be added here -->
+                </div>
+
+                <div style="display: flex; gap: 8px;">
+                    <button class="preset-btn" style="flex: 1; background: #f0f0f0; color: #333;" onclick="addSnippetRow()">+ Add Snippet</button>
+                    <button class="preset-btn" style="flex: 1;" id="saveSnippetsBtn" onclick="saveSnippets()">Save Snippets</button>
+                </div>
+            </div>
+
             <div class="progress-container" id="progressContainer">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
@@ -365,6 +393,7 @@ async def get_ui():
         const hfTokenInput = document.getElementById('hfToken');
         const hfTokenSection = document.getElementById('hfTokenSection');
         const vocabList = document.getElementById('vocabList');
+        const snippetList = document.getElementById('snippetList');
         const testMicBtn = document.getElementById('testMicBtn');
         const testResult = document.getElementById('testResult');
         let isTestingMic = false;
@@ -381,6 +410,20 @@ async def get_ui():
                 <button onclick="this.parentElement.remove()" style="background: none; border: none; color: #ff4d4d; cursor: pointer; padding: 0 5px; font-size: 18px;">&times;</button>
             `;
             vocabList.appendChild(div);
+        }
+
+        function addSnippetRow(trigger = '', text = '') {
+            const div = document.createElement('div');
+            div.className = 'snippet-row';
+            div.style.display = 'flex';
+            div.style.gap = '8px';
+            div.style.marginBottom = '8px';
+            div.innerHTML = `
+                <input type="text" placeholder="Trigger (e.g. my email)" value="${trigger}" style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px;">
+                <input type="text" placeholder="Expanded Text" value="${text}" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px;">
+                <button onclick="this.parentElement.remove()" style="background: none; border: none; color: #ff4d4d; cursor: pointer; padding: 0 5px; font-size: 18px;">&times;</button>
+            `;
+            snippetList.appendChild(div);
         }
 
         async function saveVocab() {
@@ -405,6 +448,31 @@ async def get_ui():
                 setTimeout(() => btn.innerText = originalText, 2000);
             } catch (e) {
                 console.error("Failed to save vocabulary", e);
+            }
+        }
+
+        async function saveSnippets() {
+            const entries = [];
+            snippetList.querySelectorAll('.snippet-row').forEach(row => {
+                const inputs = row.querySelectorAll('input');
+                const trigger = inputs[0].value.trim();
+                const text = inputs[1].value.trim();
+                if (trigger && text) entries.push({ trigger, text });
+            });
+
+            try {
+                const btn = document.getElementById('saveSnippetsBtn');
+                const originalText = btn.innerText;
+                btn.innerText = 'Saving...';
+                await fetch('/api/snippets', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ entries })
+                });
+                btn.innerText = 'Saved!';
+                setTimeout(() => btn.innerText = originalText, 2000);
+            } catch (e) {
+                console.error("Failed to save snippets", e);
             }
         }
 
@@ -480,6 +548,15 @@ async def get_ui():
                     vdata.entries.forEach(e => addVocabRow(e.word, e.hint));
                 } else {
                     addVocabRow();
+                }
+
+                const sr = await fetch('/api/snippets');
+                const sdata = await sr.json();
+                snippetList.innerHTML = '';
+                if (sdata.entries && sdata.entries.length > 0) {
+                    sdata.entries.forEach(e => addSnippetRow(e.trigger, e.text));
+                } else {
+                    addSnippetRow();
                 }
             } catch (e) {}
         }

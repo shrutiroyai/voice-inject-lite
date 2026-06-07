@@ -97,6 +97,18 @@ def get_vocabulary():
             pass
     return None
 
+def get_snippets():
+    """Load snippets from ~/.voice-inject/snippets.json."""
+    snippets_path = Path.home() / ".voice-inject" / "snippets.json"
+    if snippets_path.exists():
+        try:
+            with open(snippets_path) as f:
+                data = json.load(f)
+                return data.get("entries", [])
+        except Exception:
+            pass
+    return []
+
 # --- AUDIO CUES ---
 def play_cue(frequency=800, duration=0.1):
     """Play a short subtle sine-wave beep."""
@@ -265,6 +277,22 @@ def handle_transcription_result(text: str):
     if text:
         def handle_cleanup_result(cleaned: str):
             if cleaned:
+                # Apply snippets (case-insensitive, handles possessives)
+                import re
+                snippets = get_snippets()
+                for s in snippets:
+                    trigger = s.get("trigger", "").strip()
+                    expansion = s.get("text", "").strip()
+                    if trigger and expansion:
+                        # Create a flexible regex:
+                        # 1. Split trigger into words
+                        # 2. Allow each word to have an optional 's or s
+                        # 3. Allow flexible whitespace between words
+                        parts = trigger.split()
+                        pattern_str = r"\s+".join([re.escape(p) + r"('?s)?" for p in parts])
+                        pattern = re.compile(pattern_str, re.IGNORECASE)
+                        cleaned = pattern.sub(expansion, cleaned)
+                
                 print(f"✨ {cleaned}")
                 paste_text(cleaned)
         
