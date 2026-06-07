@@ -75,7 +75,17 @@ def get_config_setting(key, default):
             pass
     return os.environ.get(key.upper(), default)
 
-# === MLX WORKER THREAD (Ensures all MLX ops happen on one thread to avoid stream errors) ===
+# --- AUDIO CUES ---
+def play_cue(frequency=800, duration=0.1):
+    """Play a short subtle sine-wave beep."""
+    try:
+        t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
+        wave = 0.1 * np.sin(2 * np.pi * frequency * t)
+        sd.play(wave, SAMPLE_RATE)
+    except:
+        pass
+
+# === MLX WORKER THREAD ===
 
 mlx_request_queue = queue.Queue()
 _llm_model = None
@@ -312,12 +322,14 @@ def toggle_command():
     if not command_recording:
         command_recording = True
         command_buffer = []
+        play_cue(frequency=1000) # High blip for START
         print("🎤 Command mode: recording...")
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
         threading.Thread(target=command_vad_loop, daemon=True).start()
     else:
         command_recording = False
         _command_cooldown = now
+        play_cue(frequency=600) # Low blip for STOP
         print("⏹️ Command mode: finishing up...")
         message_queue.put({"type": "status", "recording": False, "mode": "command"})
         threading.Thread(target=command_flush_remaining, daemon=True).start()

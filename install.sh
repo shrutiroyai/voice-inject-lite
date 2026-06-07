@@ -81,14 +81,45 @@ install_deps() {
     echo -e "${GREEN}✓ Dependencies installed${NC}"
 }
 
+open_browser() {
+    local url="http://localhost:3000"
+    if command -v open &>/dev/null; then
+        open "$url"
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "$url"
+    fi
+}
+
+register_alias() {
+    local SHELL_CONFIG=""
+    local ALIAS_LINE="alias voice=\"$SCRIPT_DIR/install.sh\""
+    if echo "$SHELL" | grep -q "zsh"; then
+        SHELL_CONFIG="$HOME/.zshrc"
+    elif echo "$SHELL" | grep -q "bash"; then
+        SHELL_CONFIG="$HOME/.bashrc"
+    fi
+
+    if [ -n "$SHELL_CONFIG" ]; then
+        if ! grep -qF "$ALIAS_LINE" "$SHELL_CONFIG" 2>/dev/null; then
+            echo "" >> "$SHELL_CONFIG"
+            echo "# Voice Inject Lite" >> "$SHELL_CONFIG"
+            echo "$ALIAS_LINE" >> "$SHELL_CONFIG"
+            echo -e "${GREEN}✓ Registered 'voice' command in $SHELL_CONFIG${NC}"
+            echo -e "${BLUE}Run 'source $(basename "$SHELL_CONFIG")' to use it.${NC}"
+        fi
+    fi
+}
+
 start_services() {
-    # Clear port 3000
+    echo -e "${BLUE}Cleaning up existing processes...${NC}"
     lsof -ti :3000 | xargs kill -9 2>/dev/null
+    pkill -f "python3.*server.py" 2>/dev/null
+    pkill -f "python3.*client.py" 2>/dev/null
+    sleep 1
     
     echo -e "${BLUE}Starting Server...${NC}"
     ./.venv/bin/python3 server.py > /tmp/voice-lite-server.log 2>&1 &
     
-    # Wait for server
     local elapsed=0
     while ! curl -s http://localhost:3000/health &>/dev/null; do
         sleep 1
@@ -102,6 +133,7 @@ start_services() {
     echo -e "${BLUE}Starting Client...${NC}"
     ./.venv/bin/python3 client.py > /tmp/voice-lite-client.log 2>&1 &
     echo -e "${GREEN}✓ Services running${NC}"
+    open_browser
 }
 
 # === MAIN ===
@@ -110,6 +142,7 @@ echo -e "${BLUE}🎙️  Voice Inject Lite${NC}"
 check_prerequisites
 bootstrap_config
 install_deps
+register_alias
 start_services
 
 echo -e "${GREEN}=========================================="
