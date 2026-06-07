@@ -50,6 +50,7 @@ app.add_middleware(
 
 CONFIG_DIR = Path.home() / ".voice-inject"
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
+VOCAB_PATH = CONFIG_DIR / "vocabulary.json"
 CONFIG_DIR.mkdir(exist_ok=True)
 
 active_connections = []
@@ -77,15 +78,14 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            if message.get("type") == "status":
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
-            elif message.get("type") in ("warmup_started", "warmup_complete", "warmup_progress"):
+            # Broadcast all messages to all connections (client <-> UI)
+            for connection in active_connections:
+                if connection != websocket:
+                    await connection.send_text(data)
+            
+            if message.get("type") in ("warmup_started", "warmup_complete", "warmup_progress"):
                 warmup_state = message
-                for connection in active_connections:
-                    if connection != websocket:
-                        await connection.send_text(data)
+                
     except WebSocketDisconnect:
         active_connections.remove(websocket)
     except Exception as e:
@@ -107,6 +107,19 @@ async def update_config(new_config: dict):
             "type": "config_updated",
             "config": config
         }))
+    return {"success": True}
+
+@app.get("/api/vocabulary")
+async def get_vocabulary():
+    if VOCAB_PATH.exists():
+        with open(VOCAB_PATH) as f:
+            return json.load(f)
+    return {"entries": []}
+
+@app.post("/api/vocabulary")
+async def update_vocabulary(data: dict):
+    with open(VOCAB_PATH, "w") as f:
+        json.dump(data, f)
     return {"success": True}
 
 @app.get("/health")
@@ -307,6 +320,29 @@ async def get_ui():
                 <p style="font-size: 11px; color: #999; margin-top: 8px;">Find yours at <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: #667eea;">hf.co/settings/tokens</a></p>
             </div>
 
+            <div class="config-section">
+                <h3>Custom Vocabulary & Phonetics</h3>
+                <p style="font-size: 12px; color: #666; margin-bottom: 12px;">Help the AI understand names or technical terms.</p>
+                
+                <div id="vocabList" style="margin-bottom: 15px;">
+                    <!-- Vocabulary rows will be added here -->
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-bottom: 15px;">
+                    <button class="preset-btn" style="flex: 1; background: #f0f0f0; color: #333;" onclick="addVocabRow()">+ Add Word</button>
+                    <button class="preset-btn" style="flex: 1;" id="saveVocabBtn" onclick="saveVocab()">Save All</button>
+                </div>
+
+                <div style="background: #f9f9f9; padding: 15px; border-radius: 12px; border: 1px dashed #ccc;">
+                    <h4 style="font-size: 13px; margin-bottom: 8px;">Test Your Voice</h4>
+                    <p style="font-size: 11px; color: #666; margin-bottom: 10px;">Click 'Test' and say a word to see how the AI hears it. Use the result as a "Sounds Like" hint.</p>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="preset-btn" id="testMicBtn" style="width: auto; padding: 0 20px; background: #4a5568;" onclick="toggleTestMic()">Test Mic</button>
+                        <div id="testResult" style="font-family: monospace; font-size: 14px; color: #2d3748; font-weight: bold;"></div>
+                    </div>
+                </div>
+            </div>
+
             <div class="progress-container" id="progressContainer">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
@@ -328,6 +364,63 @@ async def get_ui():
         const warmupMsg = document.getElementById('warmupMsg');
         const hfTokenInput = document.getElementById('hfToken');
         const hfTokenSection = document.getElementById('hfTokenSection');
+        const vocabList = document.getElementById('vocabList');
+        const testMicBtn = document.getElementById('testMicBtn');
+        const testResult = document.getElementById('testResult');
+        let isTestingMic = false;
+
+        function addVocabRow(word = '', hint = '') {
+            const div = document.createElement('div');
+            div.className = 'vocab-row';
+            div.style.display = 'flex';
+            div.style.gap = '8px';
+            div.style.marginBottom = '8px';
+            div.innerHTML = `
+                <input type="text" placeholder="Word" value="${word}" style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px;">
+                <input type="text" placeholder="Sounds like (optional)" value="${hint}" style="flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px;">
+                <button onclick="this.parentElement.remove()" style="background: none; border: none; color: #ff4d4d; cursor: pointer; padding: 0 5px; font-size: 18px;">&times;</button>
+            `;
+            vocabList.appendChild(div);
+        }
+
+        async function saveVocab() {
+            const entries = [];
+            vocabList.querySelectorAll('.vocab-row').forEach(row => {
+                const inputs = row.querySelectorAll('input');
+                const word = inputs[0].value.trim();
+                const hint = inputs[1].value.trim();
+                if (word) entries.push({ word, hint });
+            });
+
+            try {
+                const btn = document.getElementById('saveVocabBtn');
+                const originalText = btn.innerText;
+                btn.innerText = 'Saving...';
+                await fetch('/api/vocabulary', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ entries })
+                });
+                btn.innerText = 'Saved!';
+                setTimeout(() => btn.innerText = originalText, 2000);
+            } catch (e) {
+                console.error("Failed to save vocabulary", e);
+            }
+        }
+
+        function toggleTestMic() {
+            isTestingMic = !isTestingMic;
+            if (isTestingMic) {
+                testMicBtn.innerText = 'Stop';
+                testMicBtn.style.background = '#e53e3e';
+                testResult.innerText = 'Listening...';
+                ws.send(JSON.stringify({ type: 'test_mic_start' }));
+            } else {
+                testMicBtn.innerText = 'Test Mic';
+                testMicBtn.style.background = '#4a5568';
+                ws.send(JSON.stringify({ type: 'test_mic_stop' }));
+            }
+        }
 
         async function saveToken() {
             const token = hfTokenInput.value.trim();
@@ -379,6 +472,15 @@ async def get_ui():
                 } else {
                     hfTokenSection.style.display = 'block';
                 }
+
+                const vr = await fetch('/api/vocabulary');
+                const vdata = await vr.json();
+                vocabList.innerHTML = '';
+                if (vdata.entries && vdata.entries.length > 0) {
+                    vdata.entries.forEach(e => addVocabRow(e.word, e.hint));
+                } else {
+                    addVocabRow();
+                }
             } catch (e) {}
         }
 
@@ -421,6 +523,9 @@ async def get_ui():
                         statusDot.className = 'status-dot active';
                     }
                     diagnostics.innerText = 'Client active. Double-tap Option to start.';
+                } else if (msg.type === 'test_mic_result') {
+                    testResult.innerText = `"${msg.text}"`;
+                    if (isTestingMic) toggleTestMic();
                 }
             };
             ws.onclose = () => {

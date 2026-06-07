@@ -75,6 +75,28 @@ def get_config_setting(key, default):
             pass
     return os.environ.get(key.upper(), default)
 
+def get_vocabulary():
+    """Load custom vocabulary from ~/.voice-inject/vocabulary.json and format for Whisper."""
+    vocab_path = Path.home() / ".voice-inject" / "vocabulary.json"
+    if vocab_path.exists():
+        try:
+            with open(vocab_path) as f:
+                data = json.load(f)
+                entries = data.get("entries", [])
+                formatted = []
+                for e in entries:
+                    word = e.get("word", "").strip()
+                    hint = e.get("hint", "").strip()
+                    if word:
+                        if hint:
+                            formatted.append(f"{word} ({hint})")
+                        else:
+                            formatted.append(word)
+                return ", ".join(formatted) if formatted else None
+        except Exception:
+            pass
+    return None
+
 # --- AUDIO CUES ---
 def play_cue(frequency=800, duration=0.1):
     """Play a short subtle sine-wave beep."""
@@ -149,11 +171,13 @@ def mlx_worker():
 
             elif req_type == "transcribe":
                 audio = request.get("audio")
+                vocab = get_vocabulary()
                 result = mlx_whisper.transcribe(
                     audio,
                     path_or_hf_repo=_MLX_MODEL,
                     language="en",
                     condition_on_previous_text=False,
+                    initial_prompt=vocab
                 )
                 text = (result.get("text") or "").strip()
                 if text.lower() in _WHISPER_HALLUCINATIONS:
@@ -226,8 +250,18 @@ def paste_text(text: str):
         'tell application "System Events" to keystroke "v" using command down'
     ], capture_output=True, text=True)
 
+test_mode_active = False
+
 def handle_transcription_result(text: str):
     """Callback from worker thread when transcription is done."""
+    global test_mode_active
+    if test_mode_active:
+        res_text = text if text else "(No speech detected)"
+        print(f"🔬 Test Result: {res_text}")
+        message_queue.put({"type": "test_mic_result", "text": res_text})
+        test_mode_active = False
+        return
+
     if text:
         def handle_cleanup_result(cleaned: str):
             if cleaned:
@@ -366,8 +400,19 @@ async def websocket_client():
                         except Exception:
                             break
                 async def receive_messages():
+                    global command_recording, test_mode_active
                     async for message in websocket:
-                        pass
+                        try:
+                            msg = json.loads(message)
+                            if msg.get("type") == "test_mic_start":
+                                test_mode_active = True
+                                if not command_recording:
+                                    toggle_command()
+                            elif msg.get("type") == "test_mic_stop":
+                                if command_recording:
+                                    toggle_command()
+                        except Exception:
+                            pass
                 await asyncio.gather(send_messages(), receive_messages(), return_exceptions=True)
         except Exception:
             ws_connected = False
