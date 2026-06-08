@@ -43,13 +43,17 @@ command_recording = False     # Command mode: double-tap Left Option
 command_buffer = []           # Audio buffer for command mode
 last_option_press = 0
 DOUBLE_TAP_THRESHOLD = 0.6
+_input_gain = 1.0             # Auto-gain factor for quiet mics
+_recent_context = []          # Rolling context: list of (text, confidence) tuples
+_MAX_CONTEXT_ITEMS = 3
+_MIN_CONTEXT_CONFIDENCE = -0.4  # avg_logprob threshold
 
 # Message queue for WebSocket
 message_queue = queue.Queue()
 ws_connected = False
 _warmup_done = False
 
-_MLX_MODEL = "mlx-community/whisper-medium-mlx"
+_MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
 _LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
 
 _WHISPER_HALLUCINATIONS = {
@@ -229,48 +233,63 @@ def mlx_worker():
             elif req_type == "transcribe":
                 audio = request.get("audio")
                 vocab = get_vocabulary()
+
+                # Build initial_prompt: vocabulary + rolling context
+                prompt_parts = []
+                if vocab:
+                    prompt_parts.append(vocab)
+                if _recent_context:
+                    context_str = " ".join(text for text, _ in _recent_context)
+                    prompt_parts.append(context_str)
+                initial_prompt = ". ".join(prompt_parts) if prompt_parts else None
+
                 result = mlx_whisper.transcribe(
                     audio,
                     path_or_hf_repo=_MLX_MODEL,
                     language="en",
                     condition_on_previous_text=False,
-                    initial_prompt=vocab,
-                    no_speech_threshold=0.3,   # Strict but not excessive
-                    logprob_threshold=-0.8,     # Balanced confidence
-                    temperature=0.0             # Disable retries for maximum speed
+                    initial_prompt=initial_prompt,
+                    no_speech_threshold=0.3,
+                    logprob_threshold=-0.8,
+                    temperature=0.0
                 )
-                
+
                 segments = result.get("segments", [])
                 filtered_text = ""
-                
-                # If we have multiple segments, check if the first one is a likely hallucination
-                # This catches the "Tarunay, [actual speech]" case.
+                avg_confidence = 0.0
+
                 if len(segments) > 1:
                     first_seg = segments[0]
                     first_text = (first_seg.get("text") or "").strip().lower()
-                    
-                    # If first segment is just a vocab word and has low confidence/high no_speech
-                    # we suspect it's a leading hallucination.
+
                     vocab_str = vocab or ""
                     vocab_words = [v.strip().lower() for v in vocab_str.split(",")]
-                    
+
                     is_leading_hallucination = False
                     if first_text in vocab_words:
-                        # High no_speech_prob or low avg_logprob for the first segment
                         if first_seg.get("no_speech_prob", 0) > 0.2 or first_seg.get("avg_logprob", 0) < -0.5:
                             is_leading_hallucination = True
-                    
+
                     if is_leading_hallucination:
-                        # Skip the first segment and combine the rest
-                        filtered_text = " ".join([s.get("text", "").strip() for s in segments[1:]])
+                        used_segments = segments[1:]
+                        filtered_text = " ".join([s.get("text", "").strip() for s in used_segments])
                     else:
+                        used_segments = segments
                         filtered_text = result.get("text", "").strip()
-                else:
+                    avg_confidence = sum(s.get("avg_logprob", -1) for s in used_segments) / len(used_segments)
+                elif segments:
                     filtered_text = result.get("text", "").strip()
+                    avg_confidence = segments[0].get("avg_logprob", -1)
 
                 if is_hallucination(filtered_text):
                     filtered_text = ""
-                
+
+                # Update rolling context if confidence is high enough
+                if filtered_text and avg_confidence > _MIN_CONTEXT_CONFIDENCE:
+                    _recent_context.append((filtered_text, avg_confidence))
+                    while len(_recent_context) > _MAX_CONTEXT_ITEMS:
+                        _recent_context.pop(0)
+
                 if callback: callback(filtered_text)
 
             elif req_type == "cleanup":
@@ -278,13 +297,19 @@ def mlx_worker():
                 if not raw_text.strip():
                     if callback: callback(raw_text)
                     continue
-                
+
                 if _llm_model is None:
                     _llm_model, _llm_tokenizer = load(_LLM_MODEL)
-                
+
+                context_hint = ""
+                if _recent_context:
+                    prev = " ".join(text for text, _ in _recent_context[:-1])
+                    if prev:
+                        context_hint = f"\nRecent context (for resolving ambiguous words): {prev}\n"
+
                 prompt = f"""<|system|>
 You are a speech-to-text post-processor. Your ONLY task is to fix grammar and punctuation.
-Do NOT change the wording.
+If a word seems wrong based on context, fix it (e.g., "arts" -> "ads" if discussing advertising).
 Do NOT change the tone.
 Do NOT remove filler words.
 Do NOT add any notes or comments.
@@ -292,7 +317,7 @@ Do NOT polish or rephrase the text.
 Ensure there is a single space after every period, comma, or punctuation mark.
 Output the cleaned version only.<|end|>
 <|user|>
-Fix grammar and punctuation for the following text. Keep all original words and tone:
+Fix grammar and punctuation for the following transcription. Keep tone and intent:{context_hint}
 
 {raw_text}<|end|>
 <|assistant|>
@@ -318,7 +343,11 @@ threading.Thread(target=mlx_worker, daemon=True).start()
 
 def audio_callback(indata, frames, time_info, status):
     if command_recording:
-        command_buffer.append(indata.copy())
+        if _input_gain != 1.0:
+            amplified = np.clip(indata.astype(np.float32) * _input_gain, -32768, 32767).astype(np.int16)
+            command_buffer.append(amplified)
+        else:
+            command_buffer.append(indata.copy())
 
 def paste_text(text: str):
     """Copy to clipboard and auto-paste via Cmd+V. Ensures trailing space for flow."""
@@ -458,12 +487,18 @@ def command_flush_remaining():
     print("📋 Command mode done.\n")
 
 _command_cooldown = 0
+_last_recording_end = 0
+_CONTEXT_RESET_SECONDS = 30
+
 def toggle_command():
-    global command_recording, command_buffer, _command_cooldown
+    global command_recording, command_buffer, _command_cooldown, _last_recording_end
     now = time.time()
     if now - _command_cooldown < 1.0:
         return
     if not command_recording:
+        # Reset context if it's been a while since last session
+        if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
+            _recent_context.clear()
         command_recording = True
         command_buffer = []
         play_cue(frequency=1000) # High blip for START
@@ -473,6 +508,7 @@ def toggle_command():
     else:
         command_recording = False
         _command_cooldown = now
+        _last_recording_end = now
         play_cue(frequency=600) # Low blip for STOP
         print("⏹️ Command mode: finishing up...")
         message_queue.put({"type": "status", "recording": False, "mode": "command"})
@@ -535,25 +571,71 @@ def start_websocket_thread():
         loop.run_until_complete(websocket_client())
     threading.Thread(target=run, daemon=True).start()
 
+def calibrate_input_gain():
+    """Set gain from config, or auto-detect if not configured."""
+    global _input_gain
+    configured_gain = float(get_config_setting("input_gain", "0"))
+    if configured_gain > 0:
+        _input_gain = configured_gain
+        if configured_gain != 1.0:
+            print(f"🔊 Using configured gain: {_input_gain:.1f}x")
+        return
+    try:
+        samples = []
+        def cal_cb(indata, frames, time_info, status):
+            samples.append(indata.copy())
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                            dtype="int16", callback=cal_cb):
+            time.sleep(0.5)
+        if samples:
+            audio = np.concatenate(samples).flatten()
+            peak = float(np.abs(audio).max())
+            if peak < 500:
+                _input_gain = min(32768.0 / max(peak * 4, 1), 40.0)
+                print(f"🔊 Low mic detected (peak={peak:.0f}), applying {_input_gain:.1f}x gain")
+            else:
+                _input_gain = 1.0
+    except Exception:
+        _input_gain = 1.0
+
+def audio_stream_loop():
+    """Maintain audio stream, reconnecting on device changes."""
+    while True:
+        try:
+            calibrate_input_gain()
+            initial_device = sd.default.device[0]
+            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                                dtype="int16", callback=audio_callback):
+                while True:
+                    time.sleep(1)
+                    if sd.default.device[0] != initial_device:
+                        print("🔄 Audio input device changed, reconnecting...")
+                        break
+        except Exception as e:
+            print(f"🔄 Audio device changed, reconnecting... ({e})")
+            time.sleep(1)
+
 def main():
     print("🎙️ Voice Inject (Command Mode Only)")
     print("   Double-tap Left Option ⌥ (transcribe → paste)")
     print("   Press Ctrl+C to quit.\n")
-    
+
     start_websocket_thread()
-    
+
     def sigint_handler(signum, frame):
         print("\n⏹️ Shutting down...")
         sys.exit(0)
     signal.signal(signal.SIGINT, sigint_handler)
-    
+
     # Start warmup via worker
     mlx_request_queue.put({"type": "warmup"})
-    
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                        dtype="int16", callback=audio_callback):
-        with keyboard.Listener(on_press=on_press) as listener:
-            listener.join()
+
+    # Audio stream in its own thread — reconnects on device changes
+    threading.Thread(target=audio_stream_loop, daemon=True).start()
+
+    # Keyboard listener runs independently
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
 
 if __name__ == "__main__":
     main()

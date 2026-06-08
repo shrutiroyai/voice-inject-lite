@@ -58,7 +58,7 @@ active_connections = []
 warmup_state = {"type": "warmup_started"}
 
 def load_config():
-    defaults = {"min_speech_energy": 180, "active_preset": "office"}
+    defaults = {"min_speech_energy": 180, "mic_type": "builtin", "environment": "normal", "input_gain": 0}
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
             data = yaml.safe_load(f) or {}
@@ -310,16 +310,31 @@ async def get_ui():
             </div>
 
             <div class="config-section">
-                <h3>Mic Environment</h3>
+                <h3>Microphone</h3>
                 <div class="preset-grid">
-                    <button class="preset-btn" id="preset-laptop" onclick="setPreset('laptop', 100)">
-                        <span>💻</span> Laptop
+                    <button class="preset-btn" id="mic-builtin" onclick="setMic('builtin')">
+                        <span>💻</span> Built-in
                     </button>
-                    <button class="preset-btn active" id="preset-office" onclick="setPreset('office', 180)">
-                        <span>🏢</span> Office
+                    <button class="preset-btn" id="mic-headphones" onclick="setMic('headphones')">
+                        <span>🎧</span> Headphones
                     </button>
-                    <button class="preset-btn" id="preset-headphones" onclick="setPreset('headphones', 350)">
-                        <span>🎧</span> Studio
+                    <button class="preset-btn" id="mic-external" onclick="setMic('external')">
+                        <span>🎙️</span> External
+                    </button>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h3>Environment</h3>
+                <div class="preset-grid">
+                    <button class="preset-btn" id="env-quiet" onclick="setEnv('quiet')">
+                        <span>🤫</span> Quiet
+                    </button>
+                    <button class="preset-btn" id="env-normal" onclick="setEnv('normal')">
+                        <span>🏢</span> Normal
+                    </button>
+                    <button class="preset-btn" id="env-noisy" onclick="setEnv('noisy')">
+                        <span>🚀</span> Noisy
                     </button>
                 </div>
             </div>
@@ -506,19 +521,33 @@ async def get_ui():
             }
         }
 
-        async function setPreset(id, energy) {
-            // Update UI
-            document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
-            document.getElementById('preset-' + id).classList.add('active');
-            
-            // Save to server
+        const MIC_GAIN = { builtin: 1.0, headphones: 20.0, external: 1.0 };
+        const ENV_ENERGY = { quiet: 80, normal: 180, noisy: 350 };
+
+        async function setMic(id) {
+            document.querySelectorAll('[id^="mic-"]').forEach(btn => btn.classList.remove('active'));
+            document.getElementById('mic-' + id).classList.add('active');
+            await saveAudioConfig(id, null);
+        }
+
+        async function setEnv(id) {
+            document.querySelectorAll('[id^="env-"]').forEach(btn => btn.classList.remove('active'));
+            document.getElementById('env-' + id).classList.add('active');
+            await saveAudioConfig(null, id);
+        }
+
+        async function saveAudioConfig(mic, env) {
+            const activeMic = mic || document.querySelector('[id^="mic-"].active')?.id.replace('mic-', '') || 'builtin';
+            const activeEnv = env || document.querySelector('[id^="env-"].active')?.id.replace('env-', '') || 'normal';
             try {
                 await fetch('/api/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        min_speech_energy: energy,
-                        active_preset: id
+                        mic_type: activeMic,
+                        environment: activeEnv,
+                        input_gain: MIC_GAIN[activeMic],
+                        min_speech_energy: ENV_ENERGY[activeEnv]
                     })
                 });
             } catch (e) {
@@ -530,11 +559,19 @@ async def get_ui():
             try {
                 const r = await fetch('/api/config');
                 const config = await r.json();
-                if (config.active_preset) {
-                    document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
-                    const btn = document.getElementById('preset-' + config.active_preset);
-                    if (btn) btn.classList.add('active');
-                }
+
+                // Restore mic type selection
+                const mic = config.mic_type || 'builtin';
+                document.querySelectorAll('[id^="mic-"]').forEach(btn => btn.classList.remove('active'));
+                const micBtn = document.getElementById('mic-' + mic);
+                if (micBtn) micBtn.classList.add('active');
+
+                // Restore environment selection
+                const env = config.environment || 'normal';
+                document.querySelectorAll('[id^="env-"]').forEach(btn => btn.classList.remove('active'));
+                const envBtn = document.getElementById('env-' + env);
+                if (envBtn) envBtn.classList.add('active');
+
                 if (config.huggingface_token) {
                     hfTokenInput.value = config.huggingface_token;
                 } else {
