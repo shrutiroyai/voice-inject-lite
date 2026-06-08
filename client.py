@@ -308,24 +308,34 @@ def mlx_worker():
                         context_hint = f"\nThe user was previously talking about: {prev}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                 prompt = f"""<|system|>
-You fix grammar and punctuation in speech transcriptions. Rules:
-- Output ONLY the corrected version of the text given by the user.
-- Do NOT output anything else. No notes, no context, no preamble.
+You fix grammar and punctuation in English speech transcriptions.
+- Output ONLY the corrected English text. Nothing else.
+- Respond in English only. Never switch languages.
+- Do NOT add explanations, notes, or questions.
 - Do NOT change tone or remove filler words.
-- If a word seems wrong based on topic context, fix it (e.g., "arts" -> "ads" if topic is advertising).{context_hint}<|end|>
+- If a word seems wrong based on context, fix it (e.g., "arts" -> "ads").{context_hint}<|end|>
 <|user|>
 {raw_text}<|end|>
 <|assistant|>
 """
                 response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150)
-                
+
                 if "<|end|>" in response:
                     response = response.split("<|end|>")[0]
-                for stop in ["\n(", "\n\n", "\nNote:", "\n---"]:
+                for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs "]:
                     if stop in response:
                         response = response.split(stop)[0]
-                
-                if callback: callback(response.strip() or raw_text)
+
+                cleaned = response.strip()
+                # Sanity check: if output is way longer than input, contains
+                # non-ASCII, or looks like a refusal, fall back to raw text
+                is_bad = (
+                    not cleaned
+                    or len(cleaned) > len(raw_text) * 3
+                    or any(ord(c) > 127 for c in cleaned)
+                    or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot"))
+                )
+                if callback: callback(raw_text if is_bad else cleaned)
 
         except Exception as e:
             print(f"⚠️ MLX Worker Error ({req_type}): {e}")
