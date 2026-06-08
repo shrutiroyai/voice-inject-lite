@@ -168,6 +168,45 @@ def play_cue(frequency=800, duration=0.1):
     except:
         pass
 
+# === COMMAND DETECTION ===
+
+_COMMAND_TRIGGERS = [
+    "rewrite this", "rewrite it", "rephrase this", "rephrase it",
+    "make it", "make this", "say it", "say this",
+    "change the tone", "change it to", "change this to",
+    "more formal", "more friendly", "more professional", "more casual",
+    "more concise", "more polite", "more direct",
+    "ensure clarity", "with clarity", "sound professional",
+    "sound friendly", "sound formal", "sound casual",
+    "write it as", "put it as", "phrase it as",
+]
+
+def detect_command(text):
+    """Detect if transcription contains a rewrite/style command.
+    Returns the command trigger found, or None if plain transcription."""
+    text_lower = text.lower()
+    for trigger in _COMMAND_TRIGGERS:
+        if trigger in text_lower:
+            return trigger
+    return None
+
+def build_command_prompt(raw_text, prev_context):
+    """Build a prompt that executes a rewrite command on text."""
+    context_block = ""
+    if prev_context:
+        context_block = f"\nThe user's previous text (which \"this\" or \"it\" may refer to): {prev_context}"
+
+    return f"""<|system|>
+You are a writing assistant. The user will give you an instruction to rewrite or restyle some text.
+- If the instruction says "this" or "it", apply it to their previous text shown below.
+- If the instruction contains both content and a command (e.g., "tell the team I'm leaving, make it friendly"), separate them: apply the command to the content.
+- Output ONLY the rewritten text. No explanations, no preamble.
+- English only.{context_block}<|end|>
+<|user|>
+{raw_text}<|end|>
+<|assistant|>
+"""
+
 # === MLX WORKER THREAD ===
 
 mlx_request_queue = queue.Queue()
@@ -301,13 +340,37 @@ def mlx_worker():
                 if _llm_model is None:
                     _llm_model, _llm_tokenizer = load(_LLM_MODEL)
 
-                context_hint = ""
-                if _recent_context:
-                    prev = " ".join(text for text, _ in _recent_context[:-1])
-                    if prev:
-                        context_hint = f"\nThe user was previously talking about: {prev}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
+                # For commands: "this/it" = the most recent transcription
+                # For correction: context = older transcriptions (not the current one)
+                last_transcription = _recent_context[-1][0] if _recent_context else ""
+                older_context = " ".join(text for text, _ in _recent_context[:-1]) if len(_recent_context) > 1 else ""
 
-                prompt = f"""<|system|>
+                # Detect if this is a rewrite command vs plain transcription
+                command_mode = detect_command(raw_text)
+
+                if command_mode:
+                    prompt = build_command_prompt(raw_text, last_transcription)
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=300)
+
+                    if "<|end|>" in response:
+                        response = response.split("<|end|>")[0]
+                    for stop in ["\nNote:", "\n---", "\n\n\n"]:
+                        if stop in response:
+                            response = response.split(stop)[0]
+
+                    cleaned = response.strip().strip('"').strip("'")
+                    is_bad = (
+                        not cleaned
+                        or any(ord(c) > 127 for c in cleaned)
+                        or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot"))
+                    )
+                    if callback: callback(raw_text if is_bad else cleaned)
+                else:
+                    context_hint = ""
+                    if older_context:
+                        context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
+
+                    prompt = f"""<|system|>
 You are a text corrector. You receive raw speech-to-text output and return the SAME text with fixed grammar and punctuation.
 You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have a conversation.
 Just return the corrected version of whatever text is given. Nothing more.
@@ -320,30 +383,28 @@ Correct this transcription:
 {raw_text}<|end|>
 <|assistant|>
 """
-                response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150)
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150)
 
-                if "<|end|>" in response:
-                    response = response.split("<|end|>")[0]
-                for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs ", "\nYes", "\nSure"]:
-                    if stop in response:
-                        response = response.split(stop)[0]
+                    if "<|end|>" in response:
+                        response = response.split("<|end|>")[0]
+                    for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs ", "\nYes", "\nSure"]:
+                        if stop in response:
+                            response = response.split(stop)[0]
 
-                cleaned = response.strip()
+                    cleaned = response.strip()
 
-                # Word overlap check: if output shares fewer than 40% of
-                # input words, the model "replied" instead of correcting
-                input_words = set(raw_text.lower().split())
-                output_words = set(cleaned.lower().split())
-                overlap = len(input_words & output_words) / max(len(input_words), 1)
+                    input_words = set(raw_text.lower().split())
+                    output_words = set(cleaned.lower().split())
+                    overlap = len(input_words & output_words) / max(len(input_words), 1)
 
-                is_bad = (
-                    not cleaned
-                    or len(cleaned) > len(raw_text) * 3
-                    or any(ord(c) > 127 for c in cleaned)
-                    or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot", "yes,", "sure,", "of course"))
-                    or overlap < 0.4
-                )
-                if callback: callback(raw_text if is_bad else cleaned)
+                    is_bad = (
+                        not cleaned
+                        or len(cleaned) > len(raw_text) * 3
+                        or any(ord(c) > 127 for c in cleaned)
+                        or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot", "yes,", "sure,", "of course"))
+                        or overlap < 0.4
+                    )
+                    if callback: callback(raw_text if is_bad else cleaned)
 
         except Exception as e:
             print(f"⚠️ MLX Worker Error ({req_type}): {e}")
