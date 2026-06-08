@@ -32,9 +32,25 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin) PLATFORM="macos" ;;
+        MINGW*|MSYS*|CYGWIN*) PLATFORM="windows" ;;
+        *) PLATFORM="linux" ;;
+    esac
+    echo -e "${BLUE}Detected platform: ${PLATFORM}${NC}"
+}
+
 check_prerequisites() {
     if ! command -v python3 &>/dev/null; then
-        echo -e "${RED}❌ python3 not found. Please install it (brew install python3)${NC}"
+        echo -e "${RED}❌ python3 not found. Please install it.${NC}"
+        if [ "$PLATFORM" = "macos" ]; then
+            echo -e "${RED}   Run: brew install python3${NC}"
+        elif [ "$PLATFORM" = "linux" ]; then
+            echo -e "${RED}   Run: sudo apt install python3 python3-venv${NC}"
+        else
+            echo -e "${RED}   Download from https://python.org${NC}"
+        fi
         exit 1
     fi
     echo -e "${GREEN}✓ Prerequisites found${NC}"
@@ -78,6 +94,21 @@ install_deps() {
     source .venv/bin/activate
     echo -e "${BLUE}Installing dependencies (this may take a minute)...${NC}"
     pip install -r requirements.txt --quiet
+
+    # Platform-specific extras
+    if [ "$PLATFORM" = "linux" ]; then
+        echo -e "${BLUE}Installing Linux extras (xclip, xdotool)...${NC}"
+        if command -v apt &>/dev/null; then
+            sudo apt install -y xclip xdotool 2>/dev/null || true
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y xclip xdotool 2>/dev/null || true
+        fi
+        pip install dbus-python PyGObject --quiet 2>/dev/null || true
+    elif [ "$PLATFORM" = "windows" ]; then
+        echo -e "${BLUE}Installing Windows extras...${NC}"
+        pip install torch transformers --quiet 2>/dev/null || true
+    fi
+
     echo -e "${GREEN}✓ Dependencies installed${NC}"
 }
 
@@ -114,15 +145,16 @@ start_services() {
     echo -e "${BLUE}Cleaning up existing processes...${NC}"
     pkill -f "client.py" 2>/dev/null
     pkill -f "server.py" 2>/dev/null
-    lsof -ti :3000 | xargs kill -9 2>/dev/null
+    if [ "$PLATFORM" = "macos" ] || [ "$PLATFORM" = "linux" ]; then
+        lsof -ti :3000 | xargs kill -9 2>/dev/null
+    fi
     sleep 1
-    # Double-check nothing survived
     pkill -9 -f "voice-inject-lite.*client.py" 2>/dev/null
     pkill -9 -f "voice-inject-lite.*server.py" 2>/dev/null
-    
+
     echo -e "${BLUE}Starting Server...${NC}"
     ./.venv/bin/python3 server.py > /tmp/voice-lite-server.log 2>&1 &
-    
+
     local elapsed=0
     while ! curl -s http://localhost:3000/health &>/dev/null; do
         sleep 1
@@ -132,7 +164,7 @@ start_services() {
             exit 1
         fi
     done
-    
+
     echo -e "${BLUE}Starting Client...${NC}"
     ./.venv/bin/python3 client.py > /tmp/voice-lite-client.log 2>&1 &
     echo -e "${GREEN}✓ Services running${NC}"
@@ -142,19 +174,31 @@ start_services() {
 # === MAIN ===
 
 echo -e "${BLUE}🎙️  Voice Inject Lite${NC}"
+detect_platform
 check_prerequisites
 bootstrap_config
 install_deps
 register_alias
 start_services
 
+if [ "$PLATFORM" = "macos" ]; then
+    HOTKEY_DESC="Double-tap Left Option (⌥)"
+    PERMS_NOTE="⚠️  Make sure to grant Microphone & Accessibility permissions to your Terminal in System Settings."
+elif [ "$PLATFORM" = "windows" ]; then
+    HOTKEY_DESC="Double-tap Left Alt"
+    PERMS_NOTE="⚠️  Run as Administrator if paste simulation doesn't work."
+else
+    HOTKEY_DESC="Double-tap Left Alt"
+    PERMS_NOTE="⚠️  Ensure xclip, xdotool are installed. Add user to 'input' group for keyboard access."
+fi
+
 echo -e "${GREEN}=========================================="
 echo -e "✅ Voice Inject Lite is READY!"
 echo -e "   UI:      http://localhost:3000"
-echo -e "   Hotkey:  Double-tap Left Option (⌥)"
+echo -e "   Hotkey:  ${HOTKEY_DESC}"
 echo -e "   Press Ctrl+C to stop"
 echo -e "==========================================${NC}"
 echo ""
-echo -e "${YELLOW}⚠️  Make sure to grant Microphone & Accessibility permissions to your Terminal in System Settings.${NC}"
+echo -e "${YELLOW}${PERMS_NOTE}${NC}"
 
 wait

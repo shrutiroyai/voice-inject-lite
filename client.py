@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Voice Inject Client — optimized for Command Mode (auto-paste) only."""
+"""Voice Inject Client — cross-platform voice-to-text with auto-paste."""
 
 import subprocess
 import signal
@@ -16,6 +16,9 @@ import json
 import threading
 import queue
 from pathlib import Path
+
+import platform_support
+from platform_support import _system_awake, copy_and_paste, get_platform_name
 
 def _load_dotenv():
     env_path = Path(__file__).parent / ".env"
@@ -53,8 +56,12 @@ message_queue = queue.Queue()
 ws_connected = False
 _warmup_done = False
 
-_MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
-_LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
+if platform_support.PLATFORM == "darwin":
+    _MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
+    _LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
+else:
+    _MLX_MODEL = "openai/whisper-large-v3"
+    _LLM_MODEL = "microsoft/Phi-3.5-mini-instruct"
 
 _WHISPER_HALLUCINATIONS = {
     "thank you", "thanks for watching", "thank you for watching",
@@ -192,11 +199,15 @@ def get_snippets():
     return []
 
 # --- AUDIO CUES ---
-def play_cue(frequency=800, duration=0.1):
-    """Play a short subtle sine-wave beep."""
+def play_cue(frequency=800, duration=0.08):
+    """Play a soft water-drop sound (quick descending pitch with decay)."""
     try:
-        t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
-        wave = 0.1 * np.sin(2 * np.pi * frequency * t)
+        n = int(SAMPLE_RATE * duration)
+        t = np.linspace(0, duration, n, False)
+        freq_sweep = frequency * np.exp(-12 * t)
+        phase = 2 * np.pi * np.cumsum(freq_sweep) / SAMPLE_RATE
+        decay = np.exp(-30 * t)
+        wave = 0.04 * decay * np.sin(phase)
         sd.play(wave, SAMPLE_RATE)
     except:
         pass
@@ -246,26 +257,91 @@ mlx_request_queue = queue.Queue()
 _llm_model = None
 _llm_tokenizer = None
 
+def _init_inference_backend():
+    """Initialize the appropriate ML backend for this platform. Returns (transcribe_fn, load_llm_fn, generate_fn)."""
+    if platform_support.PLATFORM == "darwin":
+        import mlx.core as mx
+        import mlx_whisper
+        from mlx_lm import load, generate
+        mx.set_default_device(mx.gpu)
+
+        def transcribe_fn(audio, initial_prompt):
+            return mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=_MLX_MODEL,
+                language="en",
+                condition_on_previous_text=False,
+                initial_prompt=initial_prompt,
+                no_speech_threshold=0.3,
+                logprob_threshold=-0.8,
+                temperature=0.0
+            )
+
+        def warmup_whisper():
+            silence = np.zeros(16000, dtype=np.float32)
+            mlx_whisper.transcribe(silence, path_or_hf_repo=_MLX_MODEL, condition_on_previous_text=False)
+
+        return transcribe_fn, warmup_whisper, load, generate
+    else:
+        import torch
+        from transformers import pipeline as hf_pipeline, AutoModelForCausalLM, AutoTokenizer
+
+        _whisper_pipe = [None]
+
+        def transcribe_fn(audio, initial_prompt):
+            if _whisper_pipe[0] is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                _whisper_pipe[0] = hf_pipeline(
+                    "automatic-speech-recognition", model=_MLX_MODEL,
+                    device=device, torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                )
+            result = _whisper_pipe[0](
+                audio,
+                generate_kwargs={"language": "en", "initial_prompt": initial_prompt},
+                return_timestamps=True
+            )
+            text = result.get("text", "").strip()
+            chunks = result.get("chunks", [])
+            segments = [{"text": c.get("text", ""), "avg_logprob": -0.3, "no_speech_prob": 0.0} for c in chunks] if chunks else [{"text": text, "avg_logprob": -0.3}]
+            return {"text": text, "segments": segments}
+
+        def warmup_whisper():
+            silence = np.zeros(16000, dtype=np.float32)
+            transcribe_fn(silence, None)
+
+        def load_llm(model_name):
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=torch.float16 if device == "cuda" else torch.float32
+            ).to(device)
+            return model, tokenizer
+
+        def generate_llm(model, tokenizer, prompt="", max_tokens=150):
+            device = next(model.parameters()).device
+            inputs = tokenizer(prompt, return_tensors="pt").to(device)
+            with torch.no_grad():
+                outputs = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+            new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+            return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+        return transcribe_fn, warmup_whisper, load_llm, generate_llm
+
+
 def mlx_worker():
     """Dedicated thread for all Whisper and LLM operations."""
     global _llm_model, _llm_tokenizer, _warmup_done
-    
-    import mlx.core as mx
-    import mlx_whisper
-    from mlx_lm import load, generate
-    
-    # Initialize MLX on this thread
-    mx.set_default_device(mx.gpu)
-    
+
+    transcribe_fn, warmup_whisper, load, generate = _init_inference_backend()
+
     while True:
         request = mlx_request_queue.get()
         if request is None: break
-        
+
         req_type = request.get("type")
         callback = request.get("callback")
-        
+
         try:
-            # Set HF token if available in config
             hf_token = get_config_setting("huggingface_token", "").strip()
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
@@ -273,19 +349,16 @@ def mlx_worker():
             if req_type == "warmup":
                 print("⏳ Warming up models...")
                 message_queue.put({"type": "warmup_progress", "percent": 10, "message": "Starting warmup..."})
-                
-                # Whisper warmup
+
                 message_queue.put({"type": "warmup_progress", "percent": 20, "message": "Loading Whisper..."})
-                silence = np.zeros(16000, dtype=np.float32)
                 try:
-                    mlx_whisper.transcribe(silence, path_or_hf_repo=_MLX_MODEL, condition_on_previous_text=False)
+                    warmup_whisper()
                     print("✅ Whisper warm")
                 except Exception as e:
                     print(f"⚠️ Whisper load failed: {e}")
                     message_queue.put({"type": "warmup_progress", "percent": 20, "message": f"Whisper Error: {str(e)[:50]}"})
-                    time.sleep(2) # let user see error
+                    time.sleep(2)
 
-                # LLM warmup
                 message_queue.put({"type": "warmup_progress", "percent": 50, "message": "Whisper ready. Loading LLM..."})
                 if _llm_model is None:
                     try:
@@ -295,9 +368,9 @@ def mlx_worker():
                         print(f"⚠️ LLM load failed: {e}")
                         message_queue.put({"type": "warmup_progress", "percent": 50, "message": f"LLM Error: {str(e)[:50]}"})
                         time.sleep(2)
-                
+
                 message_queue.put({"type": "warmup_progress", "percent": 90, "message": "Models ready. Finalizing..."})
-                
+
                 _warmup_done = True
                 message_queue.put({"type": "warmup_complete"})
                 print("🔥 Models ready\n")
@@ -306,7 +379,6 @@ def mlx_worker():
                 audio = request.get("audio")
                 vocab = get_vocabulary()
 
-                # Build initial_prompt: vocabulary + rolling context
                 prompt_parts = []
                 if vocab:
                     prompt_parts.append(vocab)
@@ -315,16 +387,7 @@ def mlx_worker():
                     prompt_parts.append(context_str)
                 initial_prompt = ". ".join(prompt_parts) if prompt_parts else None
 
-                result = mlx_whisper.transcribe(
-                    audio,
-                    path_or_hf_repo=_MLX_MODEL,
-                    language="en",
-                    condition_on_previous_text=False,
-                    initial_prompt=initial_prompt,
-                    no_speech_threshold=0.3,
-                    logprob_threshold=-0.8,
-                    temperature=0.0
-                )
+                result = transcribe_fn(audio, initial_prompt)
 
                 segments = result.get("segments", [])
                 filtered_text = ""
@@ -358,7 +421,6 @@ def mlx_worker():
                 if is_hallucination(filtered_text):
                     filtered_text = ""
 
-                # Update rolling context if confidence is high enough
                 if filtered_text and avg_confidence > _MIN_CONTEXT_CONFIDENCE:
                     _recent_context.append((filtered_text, avg_confidence))
                     while len(_recent_context) > _MAX_CONTEXT_ITEMS:
@@ -375,12 +437,9 @@ def mlx_worker():
                 if _llm_model is None:
                     _llm_model, _llm_tokenizer = load(_LLM_MODEL)
 
-                # For commands: "this/it" = the most recent transcription
-                # For correction: context = older transcriptions (not the current one)
                 last_transcription = _recent_context[-1][0] if _recent_context else ""
                 older_context = " ".join(text for text, _ in _recent_context[:-1]) if len(_recent_context) > 1 else ""
 
-                # Detect if this is a rewrite command vs plain transcription
                 command_mode = detect_command(raw_text)
 
                 if command_mode:
@@ -442,9 +501,9 @@ Correct this transcription:
                     if callback: callback(raw_text if is_bad else cleaned)
 
         except Exception as e:
-            print(f"⚠️ MLX Worker Error ({req_type}): {e}")
+            print(f"⚠️ Worker Error ({req_type}): {e}")
             if callback: callback(None)
-        
+
         mlx_request_queue.task_done()
 
 # Start worker thread
@@ -463,23 +522,8 @@ def audio_callback(indata, frames, time_info, status):
             command_buffer.append(indata.copy())
 
 def paste_text(text: str):
-    """Copy to clipboard and auto-paste via Cmd+V. Ensures trailing space for flow."""
-    if not text:
-        return
-    
-    # Add trailing space if missing for natural flow between segments
-    if not text.endswith(" "):
-        text += " "
-        
-    try:
-        subprocess.run(["pbcopy"], input=text.encode(), check=True)
-    except Exception as e:
-        print(f"⚠️ Clipboard copy failed: {e}")
-        return
-    subprocess.run([
-        "osascript", "-e",
-        'tell application "System Events" to keystroke "v" using command down'
-    ], capture_output=True, text=True)
+    """Copy to clipboard and auto-paste. Platform-aware."""
+    copy_and_paste(text)
 
 test_mode_active = False
 
@@ -640,7 +684,7 @@ def toggle_command():
 
 def on_press(key):
     global last_option_press
-    if key == keyboard.Key.alt_l:
+    if key == platform_support.get_hotkey_key():
         current_time = time.time()
         if (current_time - last_option_press) < DOUBLE_TAP_THRESHOLD:
             toggle_command()
@@ -723,8 +767,9 @@ def calibrate_input_gain():
         _input_gain = 1.0
 
 def audio_stream_loop():
-    """Maintain audio stream, reconnecting on device changes."""
+    """Maintain audio stream, reconnecting on device changes or wake from sleep."""
     while True:
+        _system_awake.wait()
         try:
             calibrate_input_gain()
             initial_device = sd.default.device[0]
@@ -732,16 +777,39 @@ def audio_stream_loop():
                                 dtype="int16", callback=audio_callback):
                 while True:
                     time.sleep(1)
+                    if not _system_awake.is_set():
+                        print("💤 Sleep detected, releasing audio device...")
+                        break
                     if sd.default.device[0] != initial_device:
                         print("🔄 Audio input device changed, reconnecting...")
                         break
         except Exception as e:
-            print(f"🔄 Audio device changed, reconnecting... ({e})")
+            print(f"🔄 Audio device error, reconnecting... ({e})")
             time.sleep(1)
 
+
+
+def keyboard_listener_loop():
+    """Run keyboard listener, restarting after sleep/wake cycles."""
+    while True:
+        _system_awake.wait()
+        try:
+            with keyboard.Listener(on_press=on_press) as listener:
+                while listener.running:
+                    if not _system_awake.is_set():
+                        listener.stop()
+                        break
+                    time.sleep(0.5)
+        except Exception as e:
+            print(f"⌨️ Keyboard listener restarting... ({e})")
+            time.sleep(1)
+
+
 def main():
-    print("🎙️ Voice Inject (Command Mode Only)")
-    print("   Double-tap Left Option ⌥ (transcribe → paste)")
+    platform_name = get_platform_name()
+    hotkey_desc = platform_support.get_hotkey_description()
+    print(f"🎙️ Voice Inject ({platform_name})")
+    print(f"   {hotkey_desc} (transcribe → paste)")
     print("   Press Ctrl+C to quit.\n")
 
     start_websocket_thread()
@@ -754,12 +822,14 @@ def main():
     # Start warmup via worker
     mlx_request_queue.put({"type": "warmup"})
 
-    # Audio stream in its own thread — reconnects on device changes
+    # Sleep/wake observer — platform-detected (macOS/Windows/Linux)
+    platform_support.start_sleep_wake_observer()
+
+    # Audio stream in its own thread — reconnects on device changes or wake
     threading.Thread(target=audio_stream_loop, daemon=True).start()
 
-    # Keyboard listener runs independently
-    with keyboard.Listener(on_press=on_press) as listener:
-        listener.join()
+    # Keyboard listener — restarts after sleep/wake
+    keyboard_listener_loop()
 
 if __name__ == "__main__":
     main()

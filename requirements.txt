@@ -9,3 +9,4 @@ pyyaml>=6.0
 webrtcvad>=2.0.10
 mlx-lm>=0.18.2
 scipy>=1.11.0
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
