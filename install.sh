@@ -112,10 +112,13 @@ register_alias() {
 
 start_services() {
     echo -e "${BLUE}Cleaning up existing processes...${NC}"
+    pkill -f "client.py" 2>/dev/null
+    pkill -f "server.py" 2>/dev/null
     lsof -ti :3000 | xargs kill -9 2>/dev/null
-    pkill -f "python3.*server.py" 2>/dev/null
-    pkill -f "python3.*client.py" 2>/dev/null
     sleep 1
+    # Double-check nothing survived
+    pkill -9 -f "voice-inject-lite.*client.py" 2>/dev/null
+    pkill -9 -f "voice-inject-lite.*server.py" 2>/dev/null
     
     echo -e "${BLUE}Starting Server...${NC}"
     ./.venv/bin/python3 server.py > /tmp/voice-lite-server.log 2>&1 &
