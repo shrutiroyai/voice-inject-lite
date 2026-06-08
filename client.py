@@ -308,13 +308,15 @@ def mlx_worker():
                         context_hint = f"\nThe user was previously talking about: {prev}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                 prompt = f"""<|system|>
-You fix grammar and punctuation in English speech transcriptions.
-- Output ONLY the corrected English text. Nothing else.
-- Respond in English only. Never switch languages.
-- Do NOT add explanations, notes, or questions.
-- Do NOT change tone or remove filler words.
-- If a word seems wrong based on context, fix it (e.g., "arts" -> "ads").{context_hint}<|end|>
+You are a text corrector. You receive raw speech-to-text output and return the SAME text with fixed grammar and punctuation.
+You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have a conversation.
+Just return the corrected version of whatever text is given. Nothing more.
+- English only.
+- Fix capitalization, punctuation, and obvious mistranscriptions.
+- If a word seems wrong based on context, fix it (e.g., "arts" -> "ads").
+- Do NOT add or remove words beyond minimal fixes.{context_hint}<|end|>
 <|user|>
+Correct this transcription:
 {raw_text}<|end|>
 <|assistant|>
 """
@@ -322,18 +324,24 @@ You fix grammar and punctuation in English speech transcriptions.
 
                 if "<|end|>" in response:
                     response = response.split("<|end|>")[0]
-                for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs "]:
+                for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs ", "\nYes", "\nSure"]:
                     if stop in response:
                         response = response.split(stop)[0]
 
                 cleaned = response.strip()
-                # Sanity check: if output is way longer than input, contains
-                # non-ASCII, or looks like a refusal, fall back to raw text
+
+                # Word overlap check: if output shares fewer than 40% of
+                # input words, the model "replied" instead of correcting
+                input_words = set(raw_text.lower().split())
+                output_words = set(cleaned.lower().split())
+                overlap = len(input_words & output_words) / max(len(input_words), 1)
+
                 is_bad = (
                     not cleaned
                     or len(cleaned) > len(raw_text) * 3
                     or any(ord(c) > 127 for c in cleaned)
-                    or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot"))
+                    or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot", "yes,", "sure,", "of course"))
+                    or overlap < 0.4
                 )
                 if callback: callback(raw_text if is_bad else cleaned)
 
