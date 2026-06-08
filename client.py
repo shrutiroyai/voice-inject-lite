@@ -53,12 +53,61 @@ _MLX_MODEL = "mlx-community/whisper-medium-mlx"
 _LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
 
 _WHISPER_HALLUCINATIONS = {
-    "thank you", "thank you.", "thanks.", "thanks for watching.",
-    "thanks for watching", "thank you for watching.",
-    "thank you for watching", "you", "bye.", "bye",
-    "the end.", "the end", "subscribe.", "like and subscribe.",
-    "more paste.", "more paste", "thanks for watching!", "thank you for watching!"
+    "thank you", "thanks for watching", "thank you for watching",
+    "subscribe", "like and subscribe", "bye", "the end",
+    "more paste", "subtitle by", "subtitles by", "transcribed by",
+    "please subscribe", "have a great day", "thank you very much"
 }
+
+import re
+
+def is_hallucination(text):
+    """Check if the text is likely a Whisper hallucination, including prompt recitation."""
+    if not text:
+        return True
+    
+    text_lower = text.lower().strip()
+    
+    # Remove common punctuation for the check
+    clean_text = re.sub(r'[.,!?;:]', '', text_lower).strip()
+    if not clean_text:
+        return True
+        
+    # Check if it's just a single character or very common short hallucination word
+    if clean_text in ["t", "h", "you", "thanks", "thank"]:
+        return True
+
+    # 1. Check against the fixed hallucination list
+    sorted_hallucinations = sorted([h.lower() for h in _WHISPER_HALLUCINATIONS], key=len, reverse=True)
+    
+    remaining_text = clean_text
+    while remaining_text:
+        match_found = False
+        for h in sorted_hallucinations:
+            if remaining_text.startswith(h):
+                remaining_text = remaining_text[len(h):].strip()
+                match_found = True
+                break
+        if not match_found:
+            break
+            
+    if not remaining_text:
+        return True
+        
+    # 2. Vocabulary Prompt Recitation Check
+    # If the transcription consists ONLY of words from your custom vocabulary
+    # and nothing else, it's almost certainly a hallucination of the prompt.
+    words = clean_text.split()
+    vocab_str = get_vocabulary() or ""
+    vocab_words = [v.strip().lower() for v in vocab_str.split(",")]
+    
+    if all(word in vocab_words for word in words):
+        # If it's more than one vocab word and nothing else, block it.
+        # (Real speech usually has at least one non-vocab word or is a single word)
+        if len(words) > 1:
+            return True
+        
+    return False
 
 import yaml
 
@@ -76,23 +125,19 @@ def get_config_setting(key, default):
     return os.environ.get(key.upper(), default)
 
 def get_vocabulary():
-    """Load custom vocabulary from ~/.voice-inject/vocabulary.json and format for Whisper."""
+    """Load custom vocabulary from ~/.voice-inject/vocabulary.json and format for Whisper.
+    Provides a clean list of words to the prompt to avoid confusing the model with phonetic hints.
+    """
     vocab_path = Path.home() / ".voice-inject" / "vocabulary.json"
     if vocab_path.exists():
         try:
             with open(vocab_path) as f:
                 data = json.load(f)
                 entries = data.get("entries", [])
-                formatted = []
-                for e in entries:
-                    word = e.get("word", "").strip()
-                    hint = e.get("hint", "").strip()
-                    if word:
-                        if hint:
-                            formatted.append(f"{word} ({hint})")
-                        else:
-                            formatted.append(word)
-                return ", ".join(formatted) if formatted else None
+                # Only use the words, not the hints, for the prompt.
+                # Whisper handles plain words better in the initial_prompt.
+                words = [e.get("word", "").strip() for e in entries if e.get("word")]
+                return ", ".join(words) if words else None
         except Exception:
             pass
     return None
@@ -189,12 +234,43 @@ def mlx_worker():
                     path_or_hf_repo=_MLX_MODEL,
                     language="en",
                     condition_on_previous_text=False,
-                    initial_prompt=vocab
+                    initial_prompt=vocab,
+                    no_speech_threshold=0.2,   # Very strict: kill segment if >20% chance of silence
+                    logprob_threshold=-0.5      # Very strict: require high confidence (closer to 0)
                 )
-                text = (result.get("text") or "").strip()
-                if text.lower() in _WHISPER_HALLUCINATIONS:
-                    text = ""
-                if callback: callback(text)
+                
+                segments = result.get("segments", [])
+                filtered_text = ""
+                
+                # If we have multiple segments, check if the first one is a likely hallucination
+                # This catches the "Tarunay, [actual speech]" case.
+                if len(segments) > 1:
+                    first_seg = segments[0]
+                    first_text = (first_seg.get("text") or "").strip().lower()
+                    
+                    # If first segment is just a vocab word and has low confidence/high no_speech
+                    # we suspect it's a leading hallucination.
+                    vocab_str = vocab or ""
+                    vocab_words = [v.strip().lower() for v in vocab_str.split(",")]
+                    
+                    is_leading_hallucination = False
+                    if first_text in vocab_words:
+                        # High no_speech_prob or low avg_logprob for the first segment
+                        if first_seg.get("no_speech_prob", 0) > 0.2 or first_seg.get("avg_logprob", 0) < -0.5:
+                            is_leading_hallucination = True
+                    
+                    if is_leading_hallucination:
+                        # Skip the first segment and combine the rest
+                        filtered_text = " ".join([s.get("text", "").strip() for s in segments[1:]])
+                    else:
+                        filtered_text = result.get("text", "").strip()
+                else:
+                    filtered_text = result.get("text", "").strip()
+
+                if is_hallucination(filtered_text):
+                    filtered_text = ""
+                
+                if callback: callback(filtered_text)
 
             elif req_type == "cleanup":
                 raw_text = request.get("text")
@@ -341,10 +417,15 @@ def command_vad_loop():
             has_speech = False
             
             audio_data = np.concatenate(captured, axis=0)
+            
+            # 1. Ignore very short audio (less than 300ms) - likely noise/clicks
+            if len(audio_data) < SAMPLE_RATE * 0.3:
+                continue
+
             rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
             
             # Re-read config for real-time UI updates
-            min_energy = int(get_config_setting("min_speech_energy", "180"))
+            min_energy = int(get_config_setting("min_speech_energy", "250"))
             if rms < min_energy:
                 continue
                 
@@ -363,7 +444,7 @@ def command_flush_remaining():
         
     audio_data = np.concatenate(captured, axis=0)
     rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
-    min_energy = int(get_config_setting("min_speech_energy", "180"))
+    min_energy = int(get_config_setting("min_speech_energy", "250"))
     if rms < min_energy:
         return
         
