@@ -235,8 +235,9 @@ def mlx_worker():
                     language="en",
                     condition_on_previous_text=False,
                     initial_prompt=vocab,
-                    no_speech_threshold=0.2,   # Very strict: kill segment if >20% chance of silence
-                    logprob_threshold=-0.5      # Very strict: require high confidence (closer to 0)
+                    no_speech_threshold=0.3,   # Strict but not excessive
+                    logprob_threshold=-0.8,     # Balanced confidence
+                    temperature=0.0             # Disable retries for maximum speed
                 )
                 
                 segments = result.get("segments", [])
