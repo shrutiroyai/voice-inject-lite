@@ -450,8 +450,12 @@ Correct this transcription:
 # Start worker thread
 threading.Thread(target=mlx_worker, daemon=True).start()
 
+_raw_buffer = []  # Pre-gain buffer for VAD checks
+
 def audio_callback(indata, frames, time_info, status):
+    global _raw_buffer
     if command_recording:
+        _raw_buffer.append(indata.copy())
         if _input_gain != 1.0:
             amplified = np.clip(indata.astype(np.float32) * _input_gain, -32768, 32767).astype(np.int16)
             command_buffer.append(amplified)
@@ -518,7 +522,7 @@ def handle_transcription_result(text: str):
         })
 
 def command_vad_loop():
-    global command_buffer
+    global command_buffer, _raw_buffer
     import webrtcvad
     vad = webrtcvad.Vad(3)
     frame_duration_ms = 30
@@ -526,38 +530,39 @@ def command_vad_loop():
     silence_threshold_frames = int(0.3 * 1000 / frame_duration_ms)
     silence_frames = 0
     has_speech = False
-    
+
     while command_recording:
         time.sleep(0.1)
-        if not command_buffer:
+        if not _raw_buffer:
             continue
-        
-        total_audio = np.concatenate(command_buffer, axis=0).flatten()
-        if len(total_audio) < frame_size:
+
+        # Use pre-gain audio for VAD so amplified noise doesn't fool it
+        raw_audio = np.concatenate(_raw_buffer, axis=0).flatten()
+        if len(raw_audio) < frame_size:
             continue
-        
-        last_frame = total_audio[-frame_size:]
+
+        last_frame = raw_audio[-frame_size:]
         frame_bytes = last_frame.astype(np.int16).tobytes()
         try:
             is_speech = vad.is_speech(frame_bytes, SAMPLE_RATE)
         except Exception:
             is_speech = True
-            
+
         if is_speech:
             has_speech = True
             silence_frames = 0
         else:
             silence_frames += 1
-            
+
         if has_speech and silence_frames >= silence_threshold_frames:
             captured = command_buffer
             command_buffer = []
+            _raw_buffer = []
             silence_frames = 0
             has_speech = False
-            
+
             audio_data = np.concatenate(captured, axis=0)
-            
-            # 1. Ignore very short audio (less than 300ms) - likely noise/clicks
+
             if len(audio_data) < SAMPLE_RATE * 0.3:
                 continue
 
@@ -575,18 +580,27 @@ def command_vad_loop():
                 "callback": handle_transcription_result
             })
 
+_MAX_WHISPER_SECONDS = 20  # Cap audio chunks to prevent hallucination loops
+
 def command_flush_remaining():
-    global command_buffer
+    global command_buffer, _raw_buffer
     captured, command_buffer = command_buffer, []
+    _raw_buffer = []
     if not captured:
         return
-        
+
     audio_data = np.concatenate(captured, axis=0)
+
+    # Cap length to prevent Whisper from hallucinating on long noisy buffers
+    max_samples = SAMPLE_RATE * _MAX_WHISPER_SECONDS
+    if len(audio_data) > max_samples:
+        audio_data = audio_data[:max_samples]
+
     rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
     min_energy = int(get_config_setting("min_speech_energy", "250"))
     if rms < min_energy:
         return
-        
+
     audio_float = audio_data.astype(np.float32).flatten() / 32768.0
     mlx_request_queue.put({
         "type": "transcribe",
@@ -610,6 +624,7 @@ def toggle_command():
             _recent_context.clear()
         command_recording = True
         command_buffer = []
+        _raw_buffer.clear()
         play_cue(frequency=1000) # High blip for START
         print("🎤 Command mode: recording...")
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
