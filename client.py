@@ -65,6 +65,39 @@ _WHISPER_HALLUCINATIONS = {
 
 import re
 
+def dedup_repetitions(text):
+    """Detect and remove phrase-level repetition loops from Whisper output."""
+    if not text:
+        return text
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(sentences) < 3:
+        return text
+
+    # Count occurrences (case-insensitive)
+    seen = {}
+    for s in sentences:
+        key = s.lower().strip().rstrip('.')
+        seen[key] = seen.get(key, 0) + 1
+
+    # If any phrase repeats 3+ times, it's a loop
+    has_loop = any(count >= 3 for count in seen.values())
+    if not has_loop:
+        return text
+
+    # Keep only the first occurrence of each sentence
+    result = []
+    added = set()
+    for s in sentences:
+        k = s.lower().strip().rstrip('.')
+        if k not in added:
+            result.append(s)
+            added.add(k)
+
+    # If after dedup we only have repetitive fragments, keep just the first
+    if len(result) <= 2:
+        return result[0] if result else text
+    return " ".join(result)
+
 def is_hallucination(text):
     """Check if the text is likely a Whisper hallucination, including prompt recitation."""
     if not text:
@@ -319,6 +352,8 @@ def mlx_worker():
                 elif segments:
                     filtered_text = result.get("text", "").strip()
                     avg_confidence = segments[0].get("avg_logprob", -1)
+
+                filtered_text = dedup_repetitions(filtered_text)
 
                 if is_hallucination(filtered_text):
                     filtered_text = ""
