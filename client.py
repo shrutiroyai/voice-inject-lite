@@ -305,20 +305,15 @@ def mlx_worker():
                 if _recent_context:
                     prev = " ".join(text for text, _ in _recent_context[:-1])
                     if prev:
-                        context_hint = f"\nRecent context (for resolving ambiguous words): {prev}\n"
+                        context_hint = f"\nThe user was previously talking about: {prev}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                 prompt = f"""<|system|>
-You are a speech-to-text post-processor. Your ONLY task is to fix grammar and punctuation.
-If a word seems wrong based on context, fix it (e.g., "arts" -> "ads" if discussing advertising).
-Do NOT change the tone.
-Do NOT remove filler words.
-Do NOT add any notes or comments.
-Do NOT polish or rephrase the text.
-Ensure there is a single space after every period, comma, or punctuation mark.
-Output the cleaned version only.<|end|>
+You fix grammar and punctuation in speech transcriptions. Rules:
+- Output ONLY the corrected version of the text given by the user.
+- Do NOT output anything else. No notes, no context, no preamble.
+- Do NOT change tone or remove filler words.
+- If a word seems wrong based on topic context, fix it (e.g., "arts" -> "ads" if topic is advertising).{context_hint}<|end|>
 <|user|>
-Fix grammar and punctuation for the following transcription. Keep tone and intent:{context_hint}
-
 {raw_text}<|end|>
 <|assistant|>
 """
