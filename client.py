@@ -438,17 +438,18 @@ def mlx_worker():
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     messages = [
-                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone. MATCH THE LENGTH of the original content unless explicitly told to expand. Be extremely concise. Avoid fluff, formal filler, or AI-sounding verbosity. Output ONLY the modified text. No explanations, no preamble. English only."},
+                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone. MATCH THE LENGTH of original content by default, but prioritize following explicit user instructions (like 'expand', 'elaborate', or 'write an email'). Avoid unnecessary AI-sounding fluff. Output ONLY the modified text. No explanations, no preamble. English only."},
                         {"role": "user", "content": f"Instruction: {raw_text}\nContent:\n{selection}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
                     # temp=0.2 allows for a more natural tone while remaining fast
+                    # Increased to 1000 to allow for explicit elaboration/emails
                     response = generate(
                         _llm_model, 
                         _llm_tokenizer, 
                         prompt=prompt, 
-                        max_tokens=500,
+                        max_tokens=1000,
                         temp=0.2
                     )
                     print("✨ LLM response received")
