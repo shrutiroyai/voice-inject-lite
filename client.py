@@ -59,7 +59,7 @@ _warmup_done = False
 
 if platform_support.PLATFORM == "darwin":
     _MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
-    _LLM_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
+    _LLM_MODEL = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
 else:
     _MLX_MODEL = "openai/whisper-large-v3"
     _LLM_MODEL = "microsoft/Phi-3.5-mini-instruct"
@@ -437,19 +437,12 @@ def mlx_worker():
 
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
-                    prompt = f"""<|system|>
-You are a precision writing tool. 
-- Use a natural, human tone. 
-- MATCH THE LENGTH of the original content unless explicitly told to expand. 
-- Be extremely concise. Avoid fluff, formal filler, or AI-sounding verbosity.
-- Output ONLY the modified text. No explanations, no preamble.
-- English only.<|end|>
-<|user|>
-Instruction: {raw_text}
-Content:
-{selection}<|end|>
-<|assistant|>
-"""
+                    messages = [
+                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone. MATCH THE LENGTH of the original content unless explicitly told to expand. Be extremely concise. Avoid fluff, formal filler, or AI-sounding verbosity. Output ONLY the modified text. No explanations, no preamble. English only."},
+                        {"role": "user", "content": f"Instruction: {raw_text}\nContent:\n{selection}"}
+                    ]
+                    prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
                     # temp=0.2 allows for a more natural tone while remaining fast
                     response = generate(
                         _llm_model, 
@@ -460,8 +453,11 @@ Content:
                     )
                     print("✨ LLM response received")
 
-                    if "<|end|>" in response:
-                        response = response.split("<|end|>")[0]
+                    # Handle multiple potential end tags
+                    for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>"]:
+                        if stop_tag in response:
+                            response = response.split(stop_tag)[0]
+                    
                     cleaned = response.strip().strip('"').strip("'")
                     if callback: callback(cleaned)
 
@@ -470,23 +466,18 @@ Content:
                     if older_context:
                         context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
-                    prompt = f"""<|system|>
-You are a text corrector. You receive raw speech-to-text output and return the SAME text with fixed grammar and punctuation.
-You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have a conversation.
-Just return the corrected version of whatever text is given. Nothing more.
-- English only.
-- Fix capitalization, punctuation, and obvious mistranscriptions.
-- If a word seems wrong based on context, fix it (e.g., "there" -> "their").
-- Do NOT add or remove words beyond minimal fixes.{context_hint}<|end|>
-<|user|>
-Correct this transcription:
-{raw_text}<|end|>
-<|assistant|>
-"""
+                    messages = [
+                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with fixed grammar and punctuation. You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have a conversation. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
+                        {"role": "user", "content": f"Correct this transcription:\n{raw_text}"}
+                    ]
+                    prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
                     response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150, temp=0.2)
 
-                    if "<|end|>" in response:
-                        response = response.split("<|end|>")[0]
+                    # Handle multiple potential end tags
+                    for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>"]:
+                        if stop_tag in response:
+                            response = response.split(stop_tag)[0]
                     for stop in ["\n(", "\n\n", "\nNote:", "\n---", "\nI ", "\nAs ", "\nYes", "\nSure"]:
                         if stop in response:
                             response = response.split(stop)[0]
