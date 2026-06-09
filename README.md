@@ -7,6 +7,25 @@ A super-fast, local speech-to-text injector for macOS. Double-tap a hotkey, spea
 - **Double-Tap to Type:** No clicking needed. Just double-tap the **Left Option (⌥)** key to start/stop.
 - **Selection Command Mode:** Highlight text in any app, double-tap, and say an instruction (e.g., "Make it professional" or "Rewrite as an ad") to instantly transform the selected text.
 - **Auto-Paste:** Transcribed text is automatically injected into your active application (Slack, Browser, Code Editor, etc.).
+
+## 🪄 Selection Command Mode (New!)
+
+Selection Command Mode allows you to transform existing text using your voice. It is dynamic—you can start recording, highlight text at any time, and give your command.
+
+### How to use it:
+1. **Highlight** any text (in Slack, Email, Browser, etc.).
+2. **Double-tap Left Option (⌥)** to start recording.
+3. **Say your instruction** naturally.
+4. Your highlighted text is instantly replaced with the AI's result.
+
+### Examples:
+| You Say... | Resulting Action |
+| :--- | :--- |
+| *"Make this sound like a professional email"* | Polishes tone and fixes grammar for business use. |
+| *"Rewrite this as a Craigslist ad"* | Reformats the text into a classified ad structure. |
+| *"Translate this to Spanish"* | Replaces the selection with the Spanish translation. |
+| *"Summarize this into three bullet points"* | Condenses long text into a concise list. |
+| *"Make it sound like a pirate"* | Transforms your text into pirate-speak for fun. |
 - **Local AI Power:** Uses **Whisper Medium** (via MLX) for near-instant, high-accuracy transcription on Apple Silicon.
 - **Smart Cleanup:** Uses **Phi-3.5** to fix grammar and punctuation while preserving your original wording and tone.
 - **Zero Latency:** Models are pre-warmed on startup so there's no lag on your first use.

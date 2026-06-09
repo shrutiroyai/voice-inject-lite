@@ -213,45 +213,6 @@ def play_cue(frequency=800, duration=0.08):
     except:
         pass
 
-# === COMMAND DETECTION ===
-
-_COMMAND_TRIGGERS = [
-    "rewrite this", "rewrite it", "rephrase this", "rephrase it",
-    "make it", "make this", "say it", "say this",
-    "change the tone", "change it to", "change this to",
-    "more formal", "more friendly", "more professional", "more casual",
-    "more concise", "more polite", "more direct",
-    "ensure clarity", "with clarity", "sound professional",
-    "sound friendly", "sound formal", "sound casual",
-    "write it as", "put it as", "phrase it as",
-]
-
-def detect_command(text):
-    """Detect if transcription contains a rewrite/style command.
-    Returns the command trigger found, or None if plain transcription."""
-    text_lower = text.lower()
-    for trigger in _COMMAND_TRIGGERS:
-        if trigger in text_lower:
-            return trigger
-    return None
-
-def build_command_prompt(raw_text, prev_context):
-    """Build a prompt that executes a rewrite command on text."""
-    context_block = ""
-    if prev_context:
-        context_block = f"\nThe user's previous text (which \"this\" or \"it\" may refer to): {prev_context}"
-
-    return f"""<|system|>
-You are a writing assistant. The user will give you an instruction to rewrite or restyle some text.
-- If the instruction says "this" or "it", apply it to their previous text shown below.
-- If the instruction contains both content and a command (e.g., "tell the team I'm leaving, make it friendly"), separate them: apply the command to the content.
-- Output ONLY the rewritten text. No explanations, no preamble.
-- English only.{context_block}<|end|>
-<|user|>
-{raw_text}<|end|>
-<|assistant|>
-"""
-
 # === MLX WORKER THREAD ===
 
 mlx_request_queue = queue.Queue()
@@ -430,8 +391,8 @@ def mlx_worker():
                 if callback: callback(filtered_text)
 
             elif req_type == "cleanup":
-                global _selected_text_buffer
                 raw_text = request.get("text")
+                selection = request.get("selection", "")
                 if not raw_text.strip():
                     if callback: callback(raw_text)
                     continue
@@ -442,7 +403,7 @@ def mlx_worker():
                 last_transcription = _recent_context[-1][0] if _recent_context else ""
                 older_context = " ".join(text for text, _ in _recent_context[:-1]) if len(_recent_context) > 1 else ""
 
-                if _selected_text_buffer:
+                if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     prompt = f"""<|system|>
 You are a writing assistant. Apply the user's instruction to the provided content.
@@ -451,10 +412,9 @@ You are a writing assistant. Apply the user's instruction to the provided conten
 <|user|>
 Instruction: {raw_text}
 Content:
-{_selected_text_buffer}<|end|>
+{selection}<|end|>
 <|assistant|>
 """
-                    _selected_text_buffer = "" # Clear after use
                     response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=1000)
 
                     if "<|end|>" in response:
@@ -462,26 +422,6 @@ Content:
                     cleaned = response.strip().strip('"').strip("'")
                     if callback: callback(cleaned)
 
-                else:
-                    command_mode = detect_command(raw_text)
-
-                    if command_mode:
-                    prompt = build_command_prompt(raw_text, last_transcription)
-                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=300)
-
-                    if "<|end|>" in response:
-                        response = response.split("<|end|>")[0]
-                    for stop in ["\nNote:", "\n---", "\n\n\n"]:
-                        if stop in response:
-                            response = response.split(stop)[0]
-
-                    cleaned = response.strip().strip('"').strip("'")
-                    is_bad = (
-                        not cleaned
-                        or any(ord(c) > 127 for c in cleaned)
-                        or cleaned.lower().startswith(("i'm sorry", "as an ai", "i cannot"))
-                    )
-                    if callback: callback(raw_text if is_bad else cleaned)
                 else:
                     context_hint = ""
                     if older_context:
@@ -550,7 +490,7 @@ def paste_text(text: str):
 
 test_mode_active = False
 
-def handle_transcription_result(text: str):
+def handle_transcription_result(text: str, selection: str = ""):
     """Callback from worker thread when transcription is done."""
     global test_mode_active
     if test_mode_active:
@@ -585,6 +525,7 @@ def handle_transcription_result(text: str):
         mlx_request_queue.put({
             "type": "cleanup",
             "text": text,
+            "selection": selection,
             "callback": handle_cleanup_result
         })
 
@@ -639,12 +580,21 @@ def command_vad_loop():
             min_energy = int(get_config_setting("min_speech_energy", "250"))
             if rms < min_energy:
                 continue
-                
+            
+            # DYNAMIC SELECTION CHECK
+            current_selection = platform_support.get_selected_text()
+            if current_selection:
+                print(f"📋 Selection detected: {len(current_selection)} chars")
+
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
+            
+            def make_handler(selection):
+                return lambda text: handle_transcription_result(text, selection)
+
             mlx_request_queue.put({
                 "type": "transcribe",
                 "audio": audio_float,
-                "callback": handle_transcription_result
+                "callback": make_handler(current_selection)
             })
 
 _MAX_WHISPER_SECONDS = 20  # Cap audio chunks to prevent hallucination loops
@@ -668,11 +618,14 @@ def command_flush_remaining():
     if rms < min_energy:
         return
 
+    # FINAL DYNAMIC SELECTION CHECK
+    current_selection = platform_support.get_selected_text()
+
     audio_float = audio_data.astype(np.float32).flatten() / 32768.0
     mlx_request_queue.put({
         "type": "transcribe",
         "audio": audio_float,
-        "callback": handle_transcription_result
+        "callback": lambda text: handle_transcription_result(text, current_selection)
     })
     print("📋 Command mode done.\n")
 
@@ -686,17 +639,13 @@ def toggle_command():
     if now - _command_cooldown < 1.0:
         return
     if not command_recording:
-        # Capture selection before starting
-        _selected_text_buffer = platform_support.get_selected_text()
-        if _selected_text_buffer:
-            print(f"📋 Selection captured: {len(_selected_text_buffer)} chars")
-
         # Reset context if it's been a while since last session
         if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
             _recent_context.clear()
         command_recording = True
         command_buffer = []
         _raw_buffer.clear()
+        _selected_text_buffer = "" # Start fresh
         play_cue(frequency=1000) # High blip for START
         print("🎤 Command mode: recording...")
         message_queue.put({"type": "status", "recording": True, "mode": "command"})

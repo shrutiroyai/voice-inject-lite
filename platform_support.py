@@ -24,21 +24,51 @@ def get_platform_name():
 # === CLIPBOARD + PASTE ===
 
 def get_selected_text():
-    """Clear clipboard, simulate copy, and return the new clipboard content."""
-    # Clear clipboard first so we can detect if a copy actually happened
+    """Check for selected text. On macOS, uses Accessibility API (no clipboard). On Windows, uses Ctrl+C."""
     if PLATFORM == "darwin":
-        subprocess.run(["pbcopy"], input=b"", check=True)
+        # AppleScript to get selection via Accessibility API
+        # We use a more robust and silent approach to avoid system beeps
+        script = '''
+        set selectedText to ""
+        try
+            tell application "System Events"
+                set frontApp to name of first application process whose frontmost is true
+                tell process frontApp
+                    try
+                        -- Attempt to get focused element's selected text attribute
+                        set focusedElement to (first element whose focused is true)
+                        set selectedText to value of attribute "AXSelectedText" of focusedElement
+                    on error
+                        -- Silently fail if attribute or element doesn't exist
+                    end try
+                end tell
+            end tell
+        on error
+            -- Total silence on any other error
+        end try
+        return selectedText
+        '''
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        text = res.stdout.strip()
+        if text:
+            return text
+        
+        # Fallback to clipboard if AppleScript failed (some apps don't support AXSelectedText)
+        marker = "---VOICE_INJECT_EMPTY---"
+        subprocess.run(["pbcopy"], input=marker.encode(), check=True)
         subprocess.run([
             "osascript", "-e",
             'tell application "System Events" to keystroke "c" using command down'
         ], capture_output=True, text=True)
-        time.sleep(0.15)
+        time.sleep(0.1)
         res = subprocess.run(["pbpaste"], capture_output=True, text=True)
-        return res.stdout.strip()
+        text = res.stdout.strip()
+        return "" if text == marker else text
+
     elif PLATFORM == "win32":
         try:
             # Clear using powershell
-            subprocess.run(["powershell", "-Command", "Clear-Clipboard"], check=True, shell=True)
+            subprocess.run(["powershell", "-Command", "Set-Clipboard -Value ''"], check=True, shell=True)
             # Simulate Ctrl+C
             import ctypes
             user32 = ctypes.windll.user32
@@ -49,7 +79,7 @@ def get_selected_text():
             user32.keybd_event(VK_C, 0, 0, 0)
             user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
             user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-            time.sleep(0.15)
+            time.sleep(0.1)
             # Get using powershell
             res = subprocess.run(["powershell", "-Command", "Get-Clipboard"], capture_output=True, text=True, shell=True)
             return res.stdout.strip()
