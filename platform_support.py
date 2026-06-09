@@ -23,6 +23,50 @@ def get_platform_name():
 
 # === CLIPBOARD + PASTE ===
 
+def get_selected_text():
+    """Clear clipboard, simulate copy, and return the new clipboard content."""
+    # Clear clipboard first so we can detect if a copy actually happened
+    if PLATFORM == "darwin":
+        subprocess.run(["pbcopy"], input=b"", check=True)
+        subprocess.run([
+            "osascript", "-e",
+            'tell application "System Events" to keystroke "c" using command down'
+        ], capture_output=True, text=True)
+        time.sleep(0.15)
+        res = subprocess.run(["pbpaste"], capture_output=True, text=True)
+        return res.stdout.strip()
+    elif PLATFORM == "win32":
+        try:
+            # Clear using powershell
+            subprocess.run(["powershell", "-Command", "Clear-Clipboard"], check=True, shell=True)
+            # Simulate Ctrl+C
+            import ctypes
+            user32 = ctypes.windll.user32
+            VK_CONTROL = 0x11
+            VK_C = 0x43
+            KEYEVENTF_KEYUP = 0x0002
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(VK_C, 0, 0, 0)
+            user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            time.sleep(0.15)
+            # Get using powershell
+            res = subprocess.run(["powershell", "-Command", "Get-Clipboard"], capture_output=True, text=True, shell=True)
+            return res.stdout.strip()
+        except Exception:
+            return ""
+    else:
+        # Linux fallback (requires xclip)
+        try:
+            subprocess.run(["xclip", "-selection", "clipboard", "/dev/null"], check=True)
+            subprocess.run(["xdotool", "key", "ctrl+c"], check=True)
+            time.sleep(0.15)
+            res = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True)
+            return res.stdout.strip()
+        except Exception:
+            return ""
+
+
 def copy_and_paste(text: str):
     """Copy text to clipboard and simulate paste keystroke."""
     if not text:

@@ -44,6 +44,7 @@ CHANNELS = 1
 # Global state
 command_recording = False     # Command mode: double-tap Left Option
 command_buffer = []           # Audio buffer for command mode
+_selected_text_buffer = ""    # Captured text from selection
 last_option_press = 0
 DOUBLE_TAP_THRESHOLD = 0.6
 _input_gain = 1.0             # Auto-gain factor for quiet mics
@@ -429,6 +430,7 @@ def mlx_worker():
                 if callback: callback(filtered_text)
 
             elif req_type == "cleanup":
+                global _selected_text_buffer
                 raw_text = request.get("text")
                 if not raw_text.strip():
                     if callback: callback(raw_text)
@@ -440,9 +442,30 @@ def mlx_worker():
                 last_transcription = _recent_context[-1][0] if _recent_context else ""
                 older_context = " ".join(text for text, _ in _recent_context[:-1]) if len(_recent_context) > 1 else ""
 
-                command_mode = detect_command(raw_text)
+                if _selected_text_buffer:
+                    # STRICT COMMAND MODE: use selection as content, voice as instruction
+                    prompt = f"""<|system|>
+You are a writing assistant. Apply the user's instruction to the provided content.
+- Output ONLY the modified text. No explanations, no preamble.
+- English only.<|end|>
+<|user|>
+Instruction: {raw_text}
+Content:
+{_selected_text_buffer}<|end|>
+<|assistant|>
+"""
+                    _selected_text_buffer = "" # Clear after use
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=1000)
 
-                if command_mode:
+                    if "<|end|>" in response:
+                        response = response.split("<|end|>")[0]
+                    cleaned = response.strip().strip('"').strip("'")
+                    if callback: callback(cleaned)
+
+                else:
+                    command_mode = detect_command(raw_text)
+
+                    if command_mode:
                     prompt = build_command_prompt(raw_text, last_transcription)
                     response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=300)
 
@@ -658,11 +681,16 @@ _last_recording_end = 0
 _CONTEXT_RESET_SECONDS = 30
 
 def toggle_command():
-    global command_recording, command_buffer, _command_cooldown, _last_recording_end
+    global command_recording, command_buffer, _command_cooldown, _last_recording_end, _selected_text_buffer
     now = time.time()
     if now - _command_cooldown < 1.0:
         return
     if not command_recording:
+        # Capture selection before starting
+        _selected_text_buffer = platform_support.get_selected_text()
+        if _selected_text_buffer:
+            print(f"📋 Selection captured: {len(_selected_text_buffer)} chars")
+
         # Reset context if it's been a while since last session
         if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
             _recent_context.clear()

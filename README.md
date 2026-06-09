@@ -5,6 +5,7 @@ A super-fast, local speech-to-text injector for macOS. Double-tap a hotkey, spea
 ## ✨ Features
 
 - **Double-Tap to Type:** No clicking needed. Just double-tap the **Left Option (⌥)** key to start/stop.
+- **Selection Command Mode:** Highlight text in any app, double-tap, and say an instruction (e.g., "Make it professional" or "Rewrite as an ad") to instantly transform the selected text.
 - **Auto-Paste:** Transcribed text is automatically injected into your active application (Slack, Browser, Code Editor, etc.).
 - **Local AI Power:** Uses **Whisper Medium** (via MLX) for near-instant, high-accuracy transcription on Apple Silicon.
 - **Smart Cleanup:** Uses **Phi-3.5** to fix grammar and punctuation while preserving your original wording and tone.
