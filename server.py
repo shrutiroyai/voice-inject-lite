@@ -144,248 +144,421 @@ async def health():
 async def get_ui():
     html_content = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Voice Inject</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg: #0a0a0c;
+            --container-bg: #141417;
+            --accent: #6366f1;
+            --accent-soft: rgba(99, 102, 241, 0.1);
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --border: #27272a;
+            --success: #10b981;
+            --error: #ef4444;
+            --radius: 16px;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-primary);
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            letter-spacing: -0.01em;
         }
+
+        /* Subtle background glow */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
         .container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
+            background: var(--container-bg);
+            border: 1px solid var(--border);
+            border-radius: 24px;
             width: 100%;
-            max-width: 500px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 480px;
+            box-shadow: 0 40px 100px rgba(0,0,0,0.5);
             position: relative;
             overflow: hidden;
+            backdrop-filter: blur(20px);
         }
-        h1 { text-align: center; color: #333; margin-bottom: 20px; font-size: 32px; }
+
+        .header {
+            padding: 32px 32px 24px;
+            text-align: center;
+        }
+
+        h1 { 
+            font-size: 24px; 
+            font-weight: 700; 
+            margin-bottom: 8px;
+            background: linear-gradient(to bottom right, #fff, #a1a1aa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
 
         /* Loading overlay */
         .loading-overlay {
             position: absolute;
             inset: 0;
-            background: rgba(255,255,255,0.95);
+            background: var(--container-bg);
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             z-index: 100;
-            transition: opacity 0.4s;
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
         }
-        .loading-overlay.hidden { opacity: 0; pointer-events: none; }
-        .loading-overlay .spinner {
-            width: 48px; height: 48px;
-            border: 4px solid #eee;
-            border-top-color: #667eea;
+        .loading-overlay.hidden { 
+            opacity: 0; 
+            pointer-events: none; 
+            transform: scale(1.05);
+        }
+
+        .spinner-ring {
+            width: 64px;
+            height: 64px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
             border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin-bottom: 20px;
+            animation: spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            margin-bottom: 32px;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .loading-overlay .progress-container {
-            width: 60%; height: 8px; background: #eee;
-            border-radius: 10px; overflow: hidden; margin-top: 15px;
+
+        .loading-overlay h2 { font-size: 18px; margin-bottom: 8px; }
+        .loading-overlay p { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+
+        .progress-container {
+            width: 240px; height: 4px; background: var(--border);
+            border-radius: 10px; overflow: hidden;
         }
-        .loading-overlay .progress-bar {
-            height: 100%; background: #667eea; width: 0%; transition: width 0.3s;
+        .progress-bar {
+            height: 100%; background: var(--accent); width: 0%; transition: width 0.4s;
+            box-shadow: 0 0 20px var(--accent);
         }
-        .loading-overlay p { color: #666; font-size: 14px; margin-top: 10px; }
 
         /* Tabs */
         .tab-bar {
             display: flex;
-            border-bottom: 2px solid #eee;
-            margin-bottom: 25px;
+            padding: 0 32px;
+            gap: 24px;
+            border-bottom: 1px solid var(--border);
         }
         .tab-btn {
-            flex: 1;
-            padding: 12px;
+            padding: 16px 0;
             border: none;
             background: none;
             font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.3s;
+            border-bottom: 2px solid transparent;
+            position: relative;
+        }
+        .tab-btn.active { 
+            color: var(--text-primary); 
+        }
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--accent);
+            box-shadow: 0 0 10px var(--accent);
+        }
+
+        .tab-panel { display: none; padding: 32px; }
+        .tab-panel.active { display: block; animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Main Display */
+        .hero-icon {
+            width: 80px; height: 80px;
+            background: var(--accent-soft);
+            border-radius: 20px;
+            margin: 0 auto 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+        }
+
+        .hero-text { text-align: center; margin-bottom: 32px; }
+        .hero-text h2 { font-size: 20px; margin-bottom: 8px; }
+        .hero-text p { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--border);
+            border-radius: 100px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 32px;
+            transition: all 0.3s;
+        }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-secondary); transition: all 0.3s; }
+        .status-dot.active { background: var(--success); box-shadow: 0 0 10px var(--success); }
+        .status-dot.recording { background: var(--error); box-shadow: 0 0 10px var(--error); animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        /* Settings Sections */
+        .section { margin-bottom: 32px; }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            color: var(--text-secondary);
+            font-size: 12px;
             font-weight: 600;
-            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .card-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+        .card-btn {
+            background: var(--border);
+            border: 1px solid transparent;
+            border-radius: var(--radius);
+            padding: 16px 12px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+        }
+        .card-btn svg { width: 20px; height: 20px; }
+        .card-btn span { font-size: 12px; font-weight: 500; }
+        .card-btn:hover { background: #2d2d30; color: var(--text-primary); }
+        .card-btn.active { 
+            background: var(--accent-soft); 
+            border-color: var(--accent); 
+            color: var(--accent);
+        }
+
+        /* Inputs & Buttons */
+        .input-group { display: flex; gap: 8px; margin-bottom: 12px; }
+        input {
+            flex: 1;
+            background: var(--border);
+            border: 1px solid transparent;
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        input:focus { outline: none; border-color: var(--accent); background: #2d2d30; }
+        
+        .action-btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 24px;
+            font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            border-bottom: 3px solid transparent;
-            margin-bottom: -2px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
-        .tab-btn.active { color: #667eea; border-bottom-color: #667eea; }
-        .tab-btn:hover { color: #667eea; }
-        .tab-panel { display: none; }
-        .tab-panel.active { display: block; }
+        .action-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 20px rgba(99, 102, 241, 0.3); }
+        .action-btn:active { transform: translateY(0); }
+        .action-btn.secondary { background: var(--border); color: var(--text-primary); }
+        .action-btn.secondary:hover { background: #2d2d30; box-shadow: none; }
 
-        /* Shared styles */
-        .command-info { text-align: center; padding: 10px 0; }
-        .command-icon {
-            font-size: 48px;
-            background: #f0f4ff;
-            width: 80px; height: 80px; line-height: 80px;
-            border-radius: 50%;
-            margin: 0 auto 15px;
-            color: #667eea;
-        }
-        .command-info h2 { color: #333; margin-bottom: 10px; }
-        .command-info p { color: #666; margin-bottom: 20px; line-height: 1.5; }
-        .status-box {
-            background: #f9f9f9; border-radius: 12px; padding: 15px;
-            margin-bottom: 20px; font-size: 14px; color: #555;
-            display: flex; align-items: center; justify-content: center; gap: 10px;
-        }
-        .config-section {
-            background: #f0f4ff; border-radius: 12px; padding: 20px;
-            margin-bottom: 20px; text-align: left;
-        }
-        .config-section h3 {
-            font-size: 14px; color: #667eea; margin-bottom: 12px;
-            text-transform: uppercase; letter-spacing: 1px;
-        }
-        .preset-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-        .preset-btn {
-            background: white; border: 2px solid #e0e0e0; border-radius: 8px;
-            padding: 10px 5px; cursor: pointer; font-size: 12px; font-weight: 600;
-            color: #666; transition: all 0.2s;
-            display: flex; flex-direction: column; align-items: center; gap: 5px;
-        }
-        .preset-btn span { font-size: 20px; }
-        .preset-btn:hover { border-color: #667eea; }
-        .preset-btn.active { border-color: #667eea; background: #667eea; color: white; }
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #ccc; }
-        .status-dot.active { background: #4CAF50; }
-        .status-dot.recording { background: #f44336; animation: pulse 1s infinite; }
-        @keyframes pulse {
-            0% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.2); opacity: 0.7; }
-            100% { transform: scale(1); opacity: 1; }
-        }
         .diagnostics {
-            margin-top: 20px; padding: 15px; border-radius: 10px;
-            font-size: 13px; background: #f5f5f5; color: #666;
+            margin-top: 8px;
+            padding: 16px;
+            background: #1a1a1e;
+            border-radius: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
         }
+
+        .vocab-row, .snippet-row {
+            display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+
+        .delete-btn {
+            background: none; border: none; color: var(--text-secondary);
+            cursor: pointer; padding: 8px; border-radius: 8px;
+            transition: all 0.2s;
+        }
+        .delete-btn:hover { background: rgba(239, 68, 68, 0.1); color: var(--error); }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- Loading overlay — blocks UI until models are ready -->
+        <!-- Loading overlay -->
         <div class="loading-overlay" id="loadingOverlay">
-            <div class="spinner"></div>
-            <h2 style="color: #333; margin-bottom: 5px;">Loading Models</h2>
-            <p id="loadingMsg">Connecting to client...</p>
+            <div class="spinner-ring"></div>
+            <h2>Warming Engines</h2>
+            <p id="loadingMsg">Initializing local AI models...</p>
             <div class="progress-container">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
         </div>
 
-        <h1>🎙️ Voice Inject</h1>
+        <div class="header">
+            <h1>Voice Inject</h1>
+            <p>High-fidelity local dictation</p>
+        </div>
 
         <div class="tab-bar">
-            <button class="tab-btn active" onclick="switchTab('record')">Record</button>
+            <button class="tab-btn active" onclick="switchTab('record')">Dashboard</button>
             <button class="tab-btn" onclick="switchTab('settings')">Settings</button>
         </div>
 
         <!-- RECORD TAB -->
-        <div class="tab-panel active" id="tab-record">
-            <div class="command-info">
-                <div class="command-icon">⌥</div>
-                <h2>Command Mode</h2>
-                <p>Double-tap <b>Left Option</b> to record.<br>Tap again to stop, or just pause to auto-paste.</p>
+        <div class="tab-panel active" id="tab-record" style="text-align: center;">
+            <div class="hero-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" x2="12" y1="19" y2="22"></line>
+                </svg>
+            </div>
+            
+            <div class="hero-text">
+                <h2>Command Ready</h2>
+                <p>Double-tap <b>Left Option</b> to record.<br>Automatic punctuation and grammar fixes applied.</p>
+            </div>
 
-                <div class="status-box">
-                    <div class="status-dot" id="statusDot"></div>
-                    <span id="statusText">Connecting...</span>
+            <div class="status-pill">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                    Microphone
                 </div>
-
-                <div class="config-section">
-                    <h3>Microphone</h3>
-                    <div class="preset-grid">
-                        <button class="preset-btn" id="mic-builtin" onclick="setMic('builtin')">
-                            <span>💻</span> Built-in
-                        </button>
-                        <button class="preset-btn" id="mic-headphones" onclick="setMic('headphones')">
-                            <span>🎧</span> Headphones
-                        </button>
-                        <button class="preset-btn" id="mic-external" onclick="setMic('external')">
-                            <span>🎙️</span> External
-                        </button>
-                    </div>
+                <div class="card-grid">
+                    <button class="card-btn" id="mic-builtin" onclick="setMic('builtin')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                        <span>Built-in</span>
+                    </button>
+                    <button class="card-btn" id="mic-headphones" onclick="setMic('headphones')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg>
+                        <span>Headset</span>
+                    </button>
+                    <button class="card-btn" id="mic-external" onclick="setMic('external')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg>
+                        <span>Studio</span>
+                    </button>
                 </div>
+            </div>
 
-                <div class="config-section">
-                    <h3>Environment</h3>
-                    <div class="preset-grid">
-                        <button class="preset-btn" id="env-quiet" onclick="setEnv('quiet')">
-                            <span>🤫</span> Quiet
-                        </button>
-                        <button class="preset-btn" id="env-normal" onclick="setEnv('normal')">
-                            <span>🏢</span> Normal
-                        </button>
-                        <button class="preset-btn" id="env-noisy" onclick="setEnv('noisy')">
-                            <span>🚀</span> Noisy
-                        </button>
-                    </div>
+            <div class="section">
+                <div class="section-header">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    Environment
+                </div>
+                <div class="card-grid">
+                    <button class="card-btn" id="env-quiet" onclick="setEnv('quiet')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 10v3"></path><path d="M6 6v11"></path><path d="M10 3v18"></path><path d="M14 8v7"></path><path d="M18 5v13"></path><path d="M22 10v3"></path></svg>
+                        <span>Quiet</span>
+                    </button>
+                    <button class="card-btn" id="env-normal" onclick="setEnv('normal')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+                        <span>Normal</span>
+                    </button>
+                    <button class="card-btn" id="env-noisy" onclick="setEnv('noisy')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                        <span>Noisy</span>
+                    </button>
                 </div>
             </div>
 
             <div class="diagnostics" id="diagnostics">
-                Waiting for client connection...
+                Waiting for client link...
             </div>
         </div>
 
         <!-- SETTINGS TAB -->
         <div class="tab-panel" id="tab-settings">
-            <div class="config-section">
-                <h3>Custom Vocabulary & Phonetics</h3>
-                <p style="font-size: 12px; color: #666; margin-bottom: 12px;">Help the AI understand names or technical terms.</p>
-
-                <div id="vocabList" style="margin-bottom: 15px;"></div>
-
-                <div style="display: flex; gap: 8px; margin-bottom: 15px;">
-                    <button class="preset-btn" style="flex: 1; background: #f0f0f0; color: #333;" onclick="addVocabRow()">+ Add Word</button>
-                    <button class="preset-btn" style="flex: 1;" id="saveVocabBtn" onclick="saveVocab()">Save All</button>
+            <div class="section">
+                <div class="section-header">Vocabulary & Phonetics</div>
+                <div id="vocabList" style="margin-bottom: 16px;"></div>
+                <div style="display: flex; gap: 12px;">
+                    <button class="action-btn secondary" style="flex: 1" onclick="addVocabRow()">+ Add Row</button>
+                    <button class="action-btn" style="flex: 1" id="saveVocabBtn" onclick="saveVocab()">Save All</button>
                 </div>
+            </div>
 
-                <div style="background: #f9f9f9; padding: 15px; border-radius: 12px; border: 1px dashed #ccc;">
-                    <h4 style="font-size: 13px; margin-bottom: 8px;">Test Your Voice</h4>
-                    <p style="font-size: 11px; color: #666; margin-bottom: 10px;">Click 'Test' and say a word to see how the AI hears it.</p>
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <button class="preset-btn" id="testMicBtn" style="width: auto; padding: 0 20px; background: #4a5568;" onclick="toggleTestMic()">Test Mic</button>
-                        <div id="testResult" style="font-family: monospace; font-size: 14px; color: #2d3748; font-weight: bold;"></div>
+            <div class="section">
+                <div class="section-header">Voice Debugger</div>
+                <div style="background: rgba(255,255,255,0.03); padding: 20px; border-radius: var(--radius); border: 1px dashed var(--border);">
+                    <div style="display: flex; gap: 16px; align-items: center;">
+                        <button class="action-btn" id="testMicBtn" style="background: #2d2d30;" onclick="toggleTestMic()">Test Microphone</button>
+                        <div id="testResult" style="font-family: monospace; font-size: 14px; color: var(--accent); font-weight: 600;"></div>
                     </div>
                 </div>
             </div>
 
-            <div class="config-section">
-                <h3>Snippets (Text Expansion)</h3>
-                <p style="font-size: 12px; color: #666; margin-bottom: 12px;">Define keywords that expand into full text.</p>
-
-                <div id="snippetList" style="margin-bottom: 15px;"></div>
-
-                <div style="display: flex; gap: 8px;">
-                    <button class="preset-btn" style="flex: 1; background: #f0f0f0; color: #333;" onclick="addSnippetRow()">+ Add Snippet</button>
-                    <button class="preset-btn" style="flex: 1;" id="saveSnippetsBtn" onclick="saveSnippets()">Save Snippets</button>
+            <div class="section">
+                <div class="section-header">Text Snippets</div>
+                <div id="snippetList" style="margin-bottom: 16px;"></div>
+                <div style="display: flex; gap: 12px;">
+                    <button class="action-btn secondary" style="flex: 1" onclick="addSnippetRow()">+ Add Snippet</button>
+                    <button class="action-btn" style="flex: 1" id="saveSnippetsBtn" onclick="saveSnippets()">Save All</button>
                 </div>
             </div>
 
-            <div class="config-section" id="hfTokenSection" style="display: none;">
-                <h3>Hugging Face Token</h3>
-                <p style="font-size: 12px; color: #666; margin-bottom: 12px;">Required to download gated models like Phi-3.5.</p>
-                <div style="display: flex; gap: 10px;">
-                    <input type="password" id="hfToken" placeholder="hf_..." style="flex: 1; padding: 10px; border-radius: 8px; border: 2px solid #e0e0e0; font-size: 13px;">
-                    <button class="preset-btn" style="width: auto; padding: 0 15px;" onclick="saveToken()">Save</button>
+            <div class="section" id="hfTokenSection" style="display: none;">
+                <div class="section-header">Hugging Face Auth</div>
+                <div class="input-group">
+                    <input type="password" id="hfToken" placeholder="hf_...">
+                    <button class="action-btn" onclick="saveToken()">Save</button>
                 </div>
-                <p style="font-size: 11px; color: #999; margin-top: 8px;">Find yours at <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: #667eea;">hf.co/settings/tokens</a></p>
+                <p style="font-size: 11px; color: var(--text-secondary); margin-top: 8px;">Find yours at <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: var(--accent); text-decoration: none;">hf.co/settings/tokens</a></p>
             </div>
         </div>
     </div>
@@ -419,11 +592,10 @@ async def get_ui():
         function addVocabRow(word = '', hint = '') {
             const div = document.createElement('div');
             div.className = 'vocab-row';
-            div.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
             div.innerHTML = `
-                <input type="text" placeholder="Word" value="${word}" style="flex:1;padding:8px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
-                <input type="text" placeholder="Sounds like (optional)" value="${hint}" style="flex:1;padding:8px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
-                <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#ff4d4d;cursor:pointer;padding:0 5px;font-size:18px;">&times;</button>
+                <input type="text" placeholder="Word" value="${word}">
+                <input type="text" placeholder="Phonetic" value="${hint}">
+                <button class="delete-btn" onclick="this.parentElement.remove()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg></button>
             `;
             vocabList.appendChild(div);
         }
@@ -431,11 +603,10 @@ async def get_ui():
         function addSnippetRow(trigger = '', text = '') {
             const div = document.createElement('div');
             div.className = 'snippet-row';
-            div.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
             div.innerHTML = `
-                <input type="text" placeholder="Trigger (e.g. my email)" value="${trigger}" style="flex:1;padding:8px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
-                <input type="text" placeholder="Expanded Text" value="${text}" style="flex:2;padding:8px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
-                <button onclick="this.parentElement.remove()" style="background:none;border:none;color:#ff4d4d;cursor:pointer;padding:0 5px;font-size:18px;">&times;</button>
+                <input type="text" placeholder="Trigger" value="${trigger}">
+                <input type="text" placeholder="Expansion" value="${text}">
+                <button class="delete-btn" onclick="this.parentElement.remove()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg></button>
             `;
             snippetList.appendChild(div);
         }
@@ -452,7 +623,7 @@ async def get_ui():
                 const btn = document.getElementById('saveVocabBtn');
                 btn.innerText = 'Saving...';
                 await fetch('/api/vocabulary', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ entries }) });
-                btn.innerText = 'Saved!';
+                btn.innerText = 'Success';
                 setTimeout(() => btn.innerText = 'Save All', 2000);
             } catch (e) { console.error(e); }
         }
@@ -469,21 +640,21 @@ async def get_ui():
                 const btn = document.getElementById('saveSnippetsBtn');
                 btn.innerText = 'Saving...';
                 await fetch('/api/snippets', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ entries }) });
-                btn.innerText = 'Saved!';
-                setTimeout(() => btn.innerText = 'Save Snippets', 2000);
+                btn.innerText = 'Success';
+                setTimeout(() => btn.innerText = 'Save All', 2000);
             } catch (e) { console.error(e); }
         }
 
         function toggleTestMic() {
             isTestingMic = !isTestingMic;
             if (isTestingMic) {
-                testMicBtn.innerText = 'Stop';
-                testMicBtn.style.background = '#e53e3e';
-                testResult.innerText = 'Listening...';
+                testMicBtn.innerText = 'Listening...';
+                testMicBtn.style.background = 'var(--error)';
+                testResult.innerText = '';
                 ws.send(JSON.stringify({ type: 'test_mic_start' }));
             } else {
-                testMicBtn.innerText = 'Test Mic';
-                testMicBtn.style.background = '#4a5568';
+                testMicBtn.innerText = 'Test Microphone';
+                testMicBtn.style.background = '#2d2d30';
                 ws.send(JSON.stringify({ type: 'test_mic_stop' }));
             }
         }
@@ -560,8 +731,8 @@ async def get_ui():
         function connect() {
             ws = new WebSocket('ws://' + window.location.host + '/ws');
             ws.onopen = () => {
-                statusText.innerText = 'Warming up...';
-                diagnostics.innerText = 'Server connected. Loading models...';
+                statusText.innerText = 'Connected';
+                diagnostics.innerText = 'System ready. Waiting for input...';
                 loadInitialConfig();
             };
             ws.onmessage = (e) => {
@@ -575,10 +746,9 @@ async def get_ui():
                     setTimeout(() => loadingOverlay.classList.add('hidden'), 500);
                     statusText.innerText = 'Ready';
                     statusDot.className = 'status-dot active';
-                    diagnostics.innerText = 'Double-tap Left Option to start recording.';
                 } else if (msg.type === 'status' && msg.mode === 'command') {
                     if (msg.recording) {
-                        statusText.innerText = 'Recording...';
+                        statusText.innerText = 'Recording';
                         statusDot.className = 'status-dot recording';
                     } else {
                         statusText.innerText = 'Ready';
@@ -590,7 +760,7 @@ async def get_ui():
                 }
             };
             ws.onclose = () => {
-                statusText.innerText = 'Disconnected';
+                statusText.innerText = 'Offline';
                 statusDot.className = 'status-dot';
                 setTimeout(connect, 2000);
             };

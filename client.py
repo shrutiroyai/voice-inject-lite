@@ -224,7 +224,8 @@ def _init_inference_backend():
     if platform_support.PLATFORM == "darwin":
         import mlx.core as mx
         import mlx_whisper
-        from mlx_lm import load, generate
+        from mlx_lm import load, generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
         mx.set_default_device(mx.gpu)
 
         def transcribe_fn(audio, initial_prompt):
@@ -243,7 +244,19 @@ def _init_inference_backend():
             silence = np.zeros(16000, dtype=np.float32)
             mlx_whisper.transcribe(silence, path_or_hf_repo=_MLX_MODEL, condition_on_previous_text=False)
 
-        return transcribe_fn, warmup_whisper, load, generate
+        def generate_fn(model, tokenizer, prompt, max_tokens=100, temp=0.0):
+            print(f"DEBUG: Generating with max_tokens={max_tokens}, temp={temp}")
+            try:
+                # In newer mlx_lm, temp is handled via a sampler
+                sampler = make_sampler(temp=temp)
+                res = mlx_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, sampler=sampler)
+                print("DEBUG: Generation complete")
+                return res
+            except Exception as e:
+                print(f"DEBUG: Generation failed: {e}")
+                raise e
+
+        return transcribe_fn, warmup_whisper, load, generate_fn
     else:
         import torch
         from transformers import pipeline as hf_pipeline, AutoModelForCausalLM, AutoTokenizer
@@ -279,11 +292,18 @@ def _init_inference_backend():
             ).to(device)
             return model, tokenizer
 
-        def generate_llm(model, tokenizer, prompt="", max_tokens=150):
+        def generate_llm(model, tokenizer, prompt="", max_tokens=150, temp=0.0):
             device = next(model.parameters()).device
             inputs = tokenizer(prompt, return_tensors="pt").to(device)
             with torch.no_grad():
-                outputs = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+                # For transformers, temp > 0 requires do_sample=True
+                do_sample = temp > 0
+                outputs = model.generate(
+                    **inputs, 
+                    max_new_tokens=max_tokens, 
+                    do_sample=do_sample,
+                    temperature=temp if do_sample else 1.0
+                )
             new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
             return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
@@ -312,24 +332,28 @@ def mlx_worker():
                 print("⏳ Warming up models...")
                 message_queue.put({"type": "warmup_progress", "percent": 10, "message": "Starting warmup..."})
 
-                message_queue.put({"type": "warmup_progress", "percent": 20, "message": "Loading Whisper..."})
-                try:
-                    warmup_whisper()
-                    print("✅ Whisper warm")
-                except Exception as e:
-                    print(f"⚠️ Whisper load failed: {e}")
-                    message_queue.put({"type": "warmup_progress", "percent": 20, "message": f"Whisper Error: {str(e)[:50]}"})
-                    time.sleep(2)
-
-                message_queue.put({"type": "warmup_progress", "percent": 50, "message": "Whisper ready. Loading LLM..."})
+                # Load LLM first
+                message_queue.put({"type": "warmup_progress", "percent": 20, "message": "Loading LLM..."})
                 if _llm_model is None:
                     try:
+                        print(f"⏳ Loading LLM: {_LLM_MODEL}")
                         _llm_model, _llm_tokenizer = load(_LLM_MODEL)
-                        print("✅ LLM warm")
+                        print("✅ LLM loaded")
                     except Exception as e:
                         print(f"⚠️ LLM load failed: {e}")
-                        message_queue.put({"type": "warmup_progress", "percent": 50, "message": f"LLM Error: {str(e)[:50]}"})
+                        message_queue.put({"type": "warmup_progress", "percent": 20, "message": f"LLM Error: {str(e)[:50]}"})
                         time.sleep(2)
+
+                # Then Whisper
+                message_queue.put({"type": "warmup_progress", "percent": 50, "message": "LLM ready. Loading Whisper..."})
+                try:
+                    print(f"⏳ Loading Whisper: {_MLX_MODEL}")
+                    warmup_whisper()
+                    print("✅ Whisper loaded")
+                except Exception as e:
+                    print(f"⚠️ Whisper load failed: {e}")
+                    message_queue.put({"type": "warmup_progress", "percent": 50, "message": f"Whisper Error: {str(e)[:50]}"})
+                    time.sleep(2)
 
                 message_queue.put({"type": "warmup_progress", "percent": 90, "message": "Models ready. Finalizing..."})
 
@@ -349,7 +373,9 @@ def mlx_worker():
                     prompt_parts.append(context_str)
                 initial_prompt = ". ".join(prompt_parts) if prompt_parts else None
 
+                print(f"🎙️ Transcribing ({len(audio)/SAMPLE_RATE:.1f}s)...")
                 result = transcribe_fn(audio, initial_prompt)
+                print(f"📄 Raw Transcription: {result.get('text', '').strip()}")
 
                 segments = result.get("segments", [])
                 filtered_text = ""
@@ -381,7 +407,11 @@ def mlx_worker():
                 filtered_text = dedup_repetitions(filtered_text)
 
                 if is_hallucination(filtered_text):
+                    print(f"🚫 Hallucination blocked: {filtered_text}")
                     filtered_text = ""
+                else:
+                    if filtered_text:
+                        print(f"✅ Filtered Result: {filtered_text}")
 
                 if filtered_text and avg_confidence > _MIN_CONTEXT_CONFIDENCE:
                     _recent_context.append((filtered_text, avg_confidence))
@@ -393,6 +423,8 @@ def mlx_worker():
             elif req_type == "cleanup":
                 raw_text = request.get("text")
                 selection = request.get("selection", "")
+                print(f"✨ Cleanup requested (selection={len(selection)} chars)")
+                
                 if not raw_text.strip():
                     if callback: callback(raw_text)
                     continue
@@ -406,7 +438,10 @@ def mlx_worker():
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     prompt = f"""<|system|>
-You are a writing assistant. Apply the user's instruction to the provided content.
+You are a precision writing tool. 
+- Use a natural, human tone. 
+- MATCH THE LENGTH of the original content unless explicitly told to expand. 
+- Be extremely concise. Avoid fluff, formal filler, or AI-sounding verbosity.
 - Output ONLY the modified text. No explanations, no preamble.
 - English only.<|end|>
 <|user|>
@@ -415,7 +450,15 @@ Content:
 {selection}<|end|>
 <|assistant|>
 """
-                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=1000)
+                    # temp=0.2 allows for a more natural tone while remaining fast
+                    response = generate(
+                        _llm_model, 
+                        _llm_tokenizer, 
+                        prompt=prompt, 
+                        max_tokens=500,
+                        temp=0.2
+                    )
+                    print("✨ LLM response received")
 
                     if "<|end|>" in response:
                         response = response.split("<|end|>")[0]
@@ -433,14 +476,14 @@ You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have 
 Just return the corrected version of whatever text is given. Nothing more.
 - English only.
 - Fix capitalization, punctuation, and obvious mistranscriptions.
-- If a word seems wrong based on context, fix it (e.g., "arts" -> "ads").
+- If a word seems wrong based on context, fix it (e.g., "there" -> "their").
 - Do NOT add or remove words beyond minimal fixes.{context_hint}<|end|>
 <|user|>
 Correct this transcription:
 {raw_text}<|end|>
 <|assistant|>
 """
-                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150)
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150, temp=0.2)
 
                     if "<|end|>" in response:
                         response = response.split("<|end|>")[0]
@@ -490,6 +533,37 @@ def paste_text(text: str):
 
 test_mode_active = False
 
+_snippet_cache = None
+_snippet_last_load = 0
+_SNIPPET_CACHE_TTL = 30  # seconds
+
+def get_cached_snippets():
+    """Load and compile snippets with caching."""
+    global _snippet_cache, _snippet_last_load
+    now = time.time()
+    if _snippet_cache is not None and (now - _snippet_last_load) < _SNIPPET_CACHE_TTL:
+        return _snippet_cache
+
+    raw_snippets = get_snippets()
+    compiled = []
+    import re
+    for s in raw_snippets:
+        trigger = s.get("trigger", "").strip()
+        expansion = s.get("text", "").strip()
+        if trigger and expansion:
+            parts = trigger.split()
+            # Flexible regex for plural/possessive
+            pattern_str = r"\s+".join([re.escape(p) + r"('?s)?" for p in parts])
+            try:
+                pattern = re.compile(pattern_str, re.IGNORECASE)
+                compiled.append((pattern, expansion))
+            except Exception:
+                continue
+    
+    _snippet_cache = compiled
+    _snippet_last_load = now
+    return compiled
+
 def handle_transcription_result(text: str):
     """Callback from worker thread when transcription is done."""
     global test_mode_active, _selected_text_buffer
@@ -504,20 +578,9 @@ def handle_transcription_result(text: str):
         def handle_cleanup_result(cleaned: str):
             if cleaned:
                 # Apply snippets (case-insensitive, handles possessives)
-                import re
-                snippets = get_snippets()
-                for s in snippets:
-                    trigger = s.get("trigger", "").strip()
-                    expansion = s.get("text", "").strip()
-                    if trigger and expansion:
-                        # Create a flexible regex:
-                        # 1. Split trigger into words
-                        # 2. Allow each word to have an optional 's or s
-                        # 3. Allow flexible whitespace between words
-                        parts = trigger.split()
-                        pattern_str = r"\s+".join([re.escape(p) + r"('?s)?" for p in parts])
-                        pattern = re.compile(pattern_str, re.IGNORECASE)
-                        cleaned = pattern.sub(expansion, cleaned)
+                snippets = get_cached_snippets()
+                for pattern, expansion in snippets:
+                    cleaned = pattern.sub(expansion, cleaned)
                 
                 print(f"✨ {cleaned}")
                 paste_text(cleaned)

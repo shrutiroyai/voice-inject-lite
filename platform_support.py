@@ -25,40 +25,43 @@ def get_platform_name():
 
 def get_selected_text():
     """Clear clipboard, simulate copy, and return the new clipboard content."""
-    # We use the clipboard method here because it is more compatible across apps.
-    # To prevent the macOS alert beep when nothing is selected, we temporarily
-    # mute the system alert volume.
     if PLATFORM == "darwin":
         marker = "---VOICE_INJECT_EMPTY---"
         
-        # 1. Get current alert volume and mute it
+        prev_vol = "75"
         try:
-            res = subprocess.run(["osascript", "-e", "alert volume of (get volume settings)"], capture_output=True, text=True)
-            prev_vol = res.stdout.strip()
-            subprocess.run(["osascript", "-e", "set volume settings alert volume 0"])
-        except Exception:
-            prev_vol = "75" # fallback
-
-        subprocess.run(["pbcopy"], input=marker.encode(), check=True)
-        
-        # 2. Use pynput for a keystroke simulation
-        from pynput.keyboard import Key, Controller
-        keyboard = Controller()
-        with keyboard.pressed(Key.cmd):
-            keyboard.press('c')
-            keyboard.release('c')
-            
-        time.sleep(0.15)
-        res = subprocess.run(["pbpaste"], capture_output=True, text=True)
-        text = res.stdout.strip()
-
-        # 3. Restore alert volume
-        try:
-            subprocess.run(["osascript", "-e", f"set volume settings alert volume {prev_vol}"])
+            # Use a more robust AppleScript syntax
+            res = subprocess.run(["osascript", "-e", "get alert volume of (get volume settings)"], capture_output=True, text=True)
+            if res.returncode == 0:
+                prev_vol = res.stdout.strip()
+                subprocess.run(["osascript", "-e", "set volume alert volume 0"])
         except Exception:
             pass
 
-        return "" if text == marker else text
+        try:
+            subprocess.run(["pbcopy"], input=marker.encode(), check=True)
+            
+            from pynput.keyboard import Key, Controller
+            keyboard = Controller()
+            with keyboard.pressed(Key.cmd):
+                keyboard.press('c')
+                keyboard.release('c')
+                
+            time.sleep(0.25) # Slightly longer for safety
+            res = subprocess.run(["pbpaste"], capture_output=True, text=True)
+            text = res.stdout.strip()
+        finally:
+            # Restore alert volume regardless of success
+            try:
+                subprocess.run(["osascript", "-e", f"set volume alert volume {prev_vol}"])
+            except Exception:
+                pass
+
+        if text == marker:
+            # Clear marker from clipboard so user doesn't accidentally paste it
+            subprocess.run(["pbcopy"], input=b"", check=True)
+            return ""
+        return text
     elif PLATFORM == "win32":
         try:
             subprocess.run(["powershell", "-Command", "Set-Clipboard -Value ''"], check=True, shell=True)
