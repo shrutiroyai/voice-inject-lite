@@ -24,52 +24,44 @@ def get_platform_name():
 # === CLIPBOARD + PASTE ===
 
 def get_selected_text():
-    """Check for selected text. On macOS, uses Accessibility API (no clipboard). On Windows, uses Ctrl+C."""
+    """Clear clipboard, simulate copy, and return the new clipboard content."""
+    # We use the clipboard method here because it is more compatible across apps.
+    # To prevent the macOS alert beep when nothing is selected, we temporarily
+    # mute the system alert volume.
     if PLATFORM == "darwin":
-        # AppleScript to get selection via Accessibility API
-        # We use a more robust and silent approach to avoid system beeps
-        script = '''
-        set selectedText to ""
-        try
-            tell application "System Events"
-                set frontApp to name of first application process whose frontmost is true
-                tell process frontApp
-                    try
-                        -- Attempt to get focused element's selected text attribute
-                        set focusedElement to (first element whose focused is true)
-                        set selectedText to value of attribute "AXSelectedText" of focusedElement
-                    on error
-                        -- Silently fail if attribute or element doesn't exist
-                    end try
-                end tell
-            end tell
-        on error
-            -- Total silence on any other error
-        end try
-        return selectedText
-        '''
-        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        text = res.stdout.strip()
-        if text:
-            return text
-        
-        # Fallback to clipboard if AppleScript failed (some apps don't support AXSelectedText)
         marker = "---VOICE_INJECT_EMPTY---"
+        
+        # 1. Get current alert volume and mute it
+        try:
+            res = subprocess.run(["osascript", "-e", "alert volume of (get volume settings)"], capture_output=True, text=True)
+            prev_vol = res.stdout.strip()
+            subprocess.run(["osascript", "-e", "set volume settings alert volume 0"])
+        except Exception:
+            prev_vol = "75" # fallback
+
         subprocess.run(["pbcopy"], input=marker.encode(), check=True)
-        subprocess.run([
-            "osascript", "-e",
-            'tell application "System Events" to keystroke "c" using command down'
-        ], capture_output=True, text=True)
-        time.sleep(0.1)
+        
+        # 2. Use pynput for a keystroke simulation
+        from pynput.keyboard import Key, Controller
+        keyboard = Controller()
+        with keyboard.pressed(Key.cmd):
+            keyboard.press('c')
+            keyboard.release('c')
+            
+        time.sleep(0.15)
         res = subprocess.run(["pbpaste"], capture_output=True, text=True)
         text = res.stdout.strip()
-        return "" if text == marker else text
 
+        # 3. Restore alert volume
+        try:
+            subprocess.run(["osascript", "-e", f"set volume settings alert volume {prev_vol}"])
+        except Exception:
+            pass
+
+        return "" if text == marker else text
     elif PLATFORM == "win32":
         try:
-            # Clear using powershell
             subprocess.run(["powershell", "-Command", "Set-Clipboard -Value ''"], check=True, shell=True)
-            # Simulate Ctrl+C
             import ctypes
             user32 = ctypes.windll.user32
             VK_CONTROL = 0x11
@@ -79,8 +71,7 @@ def get_selected_text():
             user32.keybd_event(VK_C, 0, 0, 0)
             user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
             user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-            time.sleep(0.1)
-            # Get using powershell
+            time.sleep(0.15)
             res = subprocess.run(["powershell", "-Command", "Get-Clipboard"], capture_output=True, text=True, shell=True)
             return res.stdout.strip()
         except Exception:

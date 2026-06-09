@@ -10,13 +10,15 @@ A super-fast, local speech-to-text injector for macOS. Double-tap a hotkey, spea
 
 ## 🪄 Selection Command Mode (New!)
 
-Selection Command Mode allows you to transform existing text using your voice. It is dynamic—you can start recording, highlight text at any time, and give your command.
+Selection Command Mode allows you to transform existing text using your voice. It is designed to be seamless: the system automatically detects if you have text highlighted the moment you start recording.
 
 ### How to use it:
-1. **Highlight** any text (in Slack, Email, Browser, etc.).
+1. **Highlight** any text you want to change (in Slack, Email, Browser, etc.).
 2. **Double-tap Left Option (⌥)** to start recording.
-3. **Say your instruction** naturally.
+3. **Say your instruction** naturally (e.g., "Make it a list" or "Translate to French").
 4. Your highlighted text is instantly replaced with the AI's result.
+
+> **Note:** If no text is highlighted when you start, the app defaults to **Standard Transcription Mode** (typing out exactly what you say with fixed grammar).
 
 ### Examples:
 | You Say... | Resulting Action |

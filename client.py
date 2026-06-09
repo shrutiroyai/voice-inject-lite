@@ -490,9 +490,9 @@ def paste_text(text: str):
 
 test_mode_active = False
 
-def handle_transcription_result(text: str, selection: str = ""):
+def handle_transcription_result(text: str):
     """Callback from worker thread when transcription is done."""
-    global test_mode_active
+    global test_mode_active, _selected_text_buffer
     if test_mode_active:
         res_text = text if text else "(No speech detected)"
         print(f"🔬 Test Result: {res_text}")
@@ -525,7 +525,7 @@ def handle_transcription_result(text: str, selection: str = ""):
         mlx_request_queue.put({
             "type": "cleanup",
             "text": text,
-            "selection": selection,
+            "selection": _selected_text_buffer,
             "callback": handle_cleanup_result
         })
 
@@ -581,20 +581,12 @@ def command_vad_loop():
             if rms < min_energy:
                 continue
             
-            # DYNAMIC SELECTION CHECK
-            current_selection = platform_support.get_selected_text()
-            if current_selection:
-                print(f"📋 Selection detected: {len(current_selection)} chars")
-
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
             
-            def make_handler(selection):
-                return lambda text: handle_transcription_result(text, selection)
-
             mlx_request_queue.put({
                 "type": "transcribe",
                 "audio": audio_float,
-                "callback": make_handler(current_selection)
+                "callback": handle_transcription_result
             })
 
 _MAX_WHISPER_SECONDS = 20  # Cap audio chunks to prevent hallucination loops
@@ -618,14 +610,11 @@ def command_flush_remaining():
     if rms < min_energy:
         return
 
-    # FINAL DYNAMIC SELECTION CHECK
-    current_selection = platform_support.get_selected_text()
-
     audio_float = audio_data.astype(np.float32).flatten() / 32768.0
     mlx_request_queue.put({
         "type": "transcribe",
         "audio": audio_float,
-        "callback": lambda text: handle_transcription_result(text, current_selection)
+        "callback": handle_transcription_result
     })
     print("📋 Command mode done.\n")
 
@@ -642,10 +631,17 @@ def toggle_command():
         # Reset context if it's been a while since last session
         if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
             _recent_context.clear()
+        
+        # Check for selection at the start (fixes repetitive beeping)
+        _selected_text_buffer = platform_support.get_selected_text()
+        if _selected_text_buffer:
+            print(f"📋 Command Mode: Selection captured ({len(_selected_text_buffer)} chars)")
+        else:
+            print("🎤 Transcription Mode: No selection")
+
         command_recording = True
         command_buffer = []
         _raw_buffer.clear()
-        _selected_text_buffer = "" # Start fresh
         play_cue(frequency=1000) # High blip for START
         print("🎤 Command mode: recording...")
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
