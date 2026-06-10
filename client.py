@@ -71,7 +71,9 @@ _WHISPER_HALLUCINATIONS = {
     "please subscribe", "have a great day", "thank you very much",
     "amara.org", "amara org", "amara community", "community subtitles",
     "subtitle community", "captioned by", "captions by", "english subtitles",
-    "translated by", "all rights reserved", "unauthorized use prohibited"
+    "translated by", "all rights reserved", "unauthorized use prohibited",
+    "i'm not sure if i'm doing this right", "i'm not sure if i'm doing this right or wrong",
+    "is this working", "can you hear me", "testing one two three"
 }
 
 import re
@@ -370,31 +372,25 @@ def mlx_worker():
                 print(f"📄 Raw Transcription: {result.get('text', '').strip()}")
 
                 segments = result.get("segments", [])
-                filtered_text = ""
-                avg_confidence = 0.0
-
-                if len(segments) > 1:
-                    first_seg = segments[0]
-                    first_text = (first_seg.get("text") or "").strip().lower()
-
-                    vocab_str = vocab or ""
-                    vocab_words = [v.strip().lower() for v in vocab_str.split(",")]
-
-                    is_leading_hallucination = False
-                    if first_text in vocab_words:
-                        if first_seg.get("no_speech_prob", 0) > 0.2 or first_seg.get("avg_logprob", 0) < -0.5:
-                            is_leading_hallucination = True
-
-                    if is_leading_hallucination:
-                        used_segments = segments[1:]
-                        filtered_text = " ".join([s.get("text", "").strip() for s in used_segments])
-                    else:
-                        used_segments = segments
-                        filtered_text = result.get("text", "").strip()
-                    avg_confidence = sum(s.get("avg_logprob", -1) for s in used_segments) / len(used_segments)
-                elif segments:
-                    filtered_text = result.get("text", "").strip()
-                    avg_confidence = segments[0].get("avg_logprob", -1)
+                
+                # Industry-standard segment-level filtering
+                # Filter out segments that are likely silence or noise (high no_speech_prob)
+                # or very low confidence (low avg_logprob)
+                valid_segments = []
+                for s in segments:
+                    no_speech = s.get("no_speech_prob", 0)
+                    confidence = s.get("avg_logprob", -1)
+                    # Tighten thresholds: Whisper often hallucinates during silence
+                    if no_speech < 0.45 and confidence > -0.8:
+                        valid_segments.append(s)
+                
+                filtered_text = " ".join([s.get("text", "").strip() for s in valid_segments])
+                
+                # Re-calculate confidence based on valid segments
+                if valid_segments:
+                    avg_confidence = sum(s.get("avg_logprob", -1) for s in valid_segments) / len(valid_segments)
+                else:
+                    avg_confidence = -1.0
 
                 filtered_text = dedup_repetitions(filtered_text)
 
@@ -474,7 +470,8 @@ def mlx_worker():
                             "1. Use standard professional punctuation. Only use exclamation marks for clear high enthusiasm.\n"
                             "2. Use the provided <history> ONLY to disambiguate phonetic errors. NEVER repeat or include the history in your output.\n"
                             "3. Just return the corrected version of the transcription. Nothing more.\n"
-                            "4. English only. Fix capitalization, punctuation, and mistranscriptions.\n\n"
+                            "4. English only. Fix capitalization, punctuation, and mistranscriptions.\n"
+                            "5. HALLUCINATION DEFENSE: If the transcription appears to be a common AI hallucination (e.g., 'Thanks for watching', 'Please subscribe', or 'I'm not sure if I'm doing this right'), output an EMPTY STRING.\n\n"
                             "OUTPUT FORMAT:\n"
                             "Output ONLY the corrected text. No explanations, no tags."
                         )},
