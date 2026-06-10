@@ -590,7 +590,7 @@ def command_vad_loop():
     vad = webrtcvad.Vad(3)
     frame_duration_ms = 30
     frame_size = int(SAMPLE_RATE * frame_duration_ms / 1000)
-    silence_threshold_frames = int(0.3 * 1000 / frame_duration_ms)
+    silence_threshold_frames = int(0.8 * 1000 / frame_duration_ms)
     silence_frames = 0
     has_speech = False
 
