@@ -438,7 +438,7 @@ def mlx_worker():
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     messages = [
-                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone. MATCH THE LENGTH of original content by default, but prioritize following explicit user instructions (like 'expand', 'elaborate', or 'write an email'). Avoid unnecessary AI-sounding fluff. Output ONLY the modified text. No explanations, no preamble. English only."},
+                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone with moderate inflection. Avoid being robotic or flat; use exclamation marks or varied punctuation when appropriate to convey moderate emotion. MATCH THE LENGTH of original content by default, but prioritize following explicit user instructions. Output ONLY the modified text. No explanations, no preamble. English only."},
                         {"role": "user", "content": f"Instruction: {raw_text}\nContent:\n{selection}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -468,7 +468,7 @@ def mlx_worker():
                         context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                     messages = [
-                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with fixed grammar and punctuation. You are NOT a chatbot. Do NOT answer questions. Do NOT give advice. Do NOT have a conversation. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
+                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection. Use moderate emotion and varied punctuation (like exclamation marks) to match a human tone. Do NOT be flat or robotic. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
                         {"role": "user", "content": f"Correct this transcription:\n{raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
