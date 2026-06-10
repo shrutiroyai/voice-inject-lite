@@ -435,7 +435,7 @@ def mlx_worker():
                             "YOUR TASK:\n"
                             "1. Apply the <instruction> to the <content>. This may require expanding on brief pointers or rewriting the text entirely.\n"
                             "2. Keep your writing tight and impactful. Avoid fluff and AI-sounding filler.\n"
-                            "3. Use a natural, human tone with moderate inflection. Avoid being robotic or flat; use exclamation marks or varied punctuation when appropriate.\n\n"
+                            "3. Use a natural, human tone with professional punctuation. Avoid being flat, but only use exclamation marks when high energy is explicitly warranted. If the instruction is neutral, keep the tone neutral.\n\n"
                             "OUTPUT FORMAT:\n"
                             "Output ONLY the final text. Do not output the tags. No explanations, no preamble. English only."
                         )},
@@ -468,7 +468,7 @@ def mlx_worker():
                         context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                     messages = [
-                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and expressive inflection. INFER the intended emotion: if the words sound enthusiastic, use exclamation marks! If it sounds like a question, use a question mark. Do NOT be flat or robotic. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
+                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection. Use standard professional punctuation by default; only use exclamation marks if high enthusiasm is clearly expressed in the words. If it sounds like a question, use a question mark. Do NOT be flat or robotic, but avoid over-exclaiming. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
                         {"role": "user", "content": f"Correct this transcription:\n{raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
