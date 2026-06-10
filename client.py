@@ -366,6 +366,8 @@ def mlx_worker():
                 vocab = get_vocabulary()
 
                 prompt_parts = []
+                # Inject a tone hint to Whisper to encourage expressive punctuation
+                prompt_parts.append("Hello! Use exclamation marks, question marks, and expressive punctuation where appropriate.")
                 if vocab:
                     prompt_parts.append(vocab)
                 if _recent_context:
@@ -468,7 +470,7 @@ def mlx_worker():
                         context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
 
                     messages = [
-                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection. Use moderate emotion and varied punctuation (like exclamation marks) to match a human tone. Do NOT be flat or robotic. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
+                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and expressive inflection. INFER the intended emotion: if the words sound enthusiastic, use exclamation marks! If it sounds like a question, use a question mark. Do NOT be flat or robotic. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
                         {"role": "user", "content": f"Correct this transcription:\n{raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
