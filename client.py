@@ -68,7 +68,10 @@ _WHISPER_HALLUCINATIONS = {
     "thank you", "thanks for watching", "thank you for watching",
     "subscribe", "like and subscribe", "bye", "the end",
     "more paste", "subtitle by", "subtitles by", "transcribed by",
-    "please subscribe", "have a great day", "thank you very much"
+    "please subscribe", "have a great day", "thank you very much",
+    "amara.org", "amara org", "amara community", "community subtitles",
+    "subtitle community", "captioned by", "captions by", "english subtitles",
+    "translated by", "all rights reserved", "unauthorized use prohibited"
 }
 
 import re
@@ -113,30 +116,17 @@ def is_hallucination(text):
     
     text_lower = text.lower().strip()
     
-    # Remove common punctuation for the check
+    # 1. Check against the fixed hallucination list (fuzzy matching)
+    # If the text contains any of these phrases or consists ONLY of them
+    for h in _WHISPER_HALLUCINATIONS:
+        if h in text_lower:
+            # If it's a very short text containing a hallucination phrase, block it
+            if len(text_lower) < len(h) + 10:
+                return True
+    
+    # Remove common punctuation for further checks
     clean_text = re.sub(r'[.,!?;:]', '', text_lower).strip()
     if not clean_text:
-        return True
-        
-    # Check if it's just a single character or very common short hallucination word
-    if clean_text in ["t", "h", "you", "thanks", "thank"]:
-        return True
-
-    # 1. Check against the fixed hallucination list
-    sorted_hallucinations = sorted([h.lower() for h in _WHISPER_HALLUCINATIONS], key=len, reverse=True)
-    
-    remaining_text = clean_text
-    while remaining_text:
-        match_found = False
-        for h in sorted_hallucinations:
-            if remaining_text.startswith(h):
-                remaining_text = remaining_text[len(h):].strip()
-                match_found = True
-                break
-        if not match_found:
-            break
-            
-    if not remaining_text:
         return True
         
     # 2. Vocabulary Prompt Recitation Check
@@ -440,8 +430,16 @@ def mlx_worker():
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     messages = [
-                        {"role": "system", "content": "You are a precision writing tool. Use a natural, human tone with moderate inflection. Avoid being robotic or flat; use exclamation marks or varied punctuation when appropriate to convey moderate emotion. MATCH THE LENGTH of original content by default, but prioritize following explicit user instructions. Output ONLY the modified text. No explanations, no preamble. English only."},
-                        {"role": "user", "content": f"Instruction: {raw_text}\nContent:\n{selection}"}
+                        {"role": "system", "content": (
+                            "You are a precision writing tool. You will receive an <instruction> and <content>.\n\n"
+                            "YOUR TASK:\n"
+                            "1. Apply the <instruction> to the <content>. This may require expanding on brief pointers or rewriting the text entirely.\n"
+                            "2. Keep your writing tight and impactful. Avoid fluff and AI-sounding filler.\n"
+                            "3. Use a natural, human tone with moderate inflection. Avoid being robotic or flat; use exclamation marks or varied punctuation when appropriate.\n\n"
+                            "OUTPUT FORMAT:\n"
+                            "Output ONLY the final text. Do not output the tags. No explanations, no preamble. English only."
+                        )},
+                        {"role": "user", "content": f"<instruction>{raw_text}</instruction>\n<content>\n{selection}\n</content>"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
