@@ -582,14 +582,19 @@ def handle_transcription_result(text: str):
         _selected_text_buffer = ""
 
         def handle_cleanup_result(cleaned: str):
-            if cleaned:
-                # Apply snippets (case-insensitive, handles possessives)
-                snippets = get_cached_snippets()
-                for pattern, expansion in snippets:
-                    cleaned = pattern.sub(expansion, cleaned)
-                
-                print(f"✨ {cleaned}")
-                paste_text(cleaned)
+            global _is_processing
+            try:
+                if cleaned:
+                    # Apply snippets (case-insensitive, handles possessives)
+                    snippets = get_cached_snippets()
+                    for pattern, expansion in snippets:
+                        cleaned = pattern.sub(expansion, cleaned)
+                    
+                    print(f"✨ {cleaned}")
+                    paste_text(cleaned)
+            finally:
+                # Unlock for the next session
+                _is_processing = False
         
         mlx_request_queue.put({
             "type": "cleanup",
@@ -637,6 +642,10 @@ def command_vad_loop():
             if _selected_text_buffer:
                 continue
 
+            # Lock processing to prevent manual stop from triggering a duplicate
+            global _is_processing
+            _is_processing = True
+
             captured = command_buffer
             command_buffer = []
             _raw_buffer = []
@@ -666,7 +675,11 @@ def command_vad_loop():
 _MAX_WHISPER_SECONDS = 20  # Cap audio chunks to prevent hallucination loops
 
 def command_flush_remaining():
-    global command_buffer, _raw_buffer
+    global command_buffer, _raw_buffer, _is_processing
+    if _is_processing:
+        return
+    _is_processing = True
+
     captured, command_buffer = command_buffer, []
     _raw_buffer = []
     if not captured:
@@ -695,12 +708,14 @@ def command_flush_remaining():
 _command_cooldown = 0
 _last_recording_end = 0
 _CONTEXT_RESET_SECONDS = 30
+_is_processing = False
 
 def toggle_command():
-    global command_recording, command_buffer, _command_cooldown, _last_recording_end, _selected_text_buffer
+    global command_recording, command_buffer, _command_cooldown, _last_recording_end, _selected_text_buffer, _is_processing
     now = time.time()
-    if now - _command_cooldown < 1.0:
+    if now - _command_cooldown < 1.0 or _is_processing:
         return
+
     if not command_recording:
         # Reset context if it's been a while since last session
         if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
@@ -721,6 +736,14 @@ def toggle_command():
         message_queue.put({"type": "status", "recording": True, "mode": "command"})
         threading.Thread(target=command_vad_loop, daemon=True).start()
     else:
+        # Mid-session check: Did the user select new text?
+        new_selection = platform_support.get_selected_text()
+        if new_selection and new_selection != _selected_text_buffer:
+            _selected_text_buffer = new_selection
+            print(f"🔄 Selection updated mid-session ({len(new_selection)} chars)")
+            play_cue(frequency=800) # Mid blip for UPDATE
+            return
+
         command_recording = False
         _command_cooldown = now
         _last_recording_end = now
