@@ -463,13 +463,22 @@ def mlx_worker():
                     if callback: callback(cleaned)
 
                 else:
-                    context_hint = ""
+                    history_context = ""
                     if older_context:
-                        context_hint = f"\nThe user was previously talking about: {older_context}\nUse this ONLY to resolve ambiguous words. Do NOT include any of it in your output."
+                        history_context = f"<history>{older_context}</history>\n"
 
                     messages = [
-                        {"role": "system", "content": f"You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection. Use standard professional punctuation by default; only use exclamation marks if high enthusiasm is clearly expressed in the words. If it sounds like a question, use a question mark. Do NOT be flat or robotic, but avoid over-exclaiming. You are NOT a chatbot. Just return the corrected version of whatever text is given. Nothing more. English only. Fix capitalization, punctuation, and obvious mistranscriptions. If a word seems wrong based on context, fix it (e.g., 'there' -> 'their'). Do NOT add or remove words beyond minimal fixes.{context_hint}"},
-                        {"role": "user", "content": f"Correct this transcription:\n{raw_text}"}
+                        {"role": "system", "content": (
+                            "You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection.\n\n"
+                            "RULES:\n"
+                            "1. Use standard professional punctuation. Only use exclamation marks for clear high enthusiasm.\n"
+                            "2. Use the provided <history> ONLY to disambiguate phonetic errors. NEVER repeat or include the history in your output.\n"
+                            "3. Just return the corrected version of the transcription. Nothing more.\n"
+                            "4. English only. Fix capitalization, punctuation, and mistranscriptions.\n\n"
+                            "OUTPUT FORMAT:\n"
+                            "Output ONLY the corrected text. No explanations, no tags."
+                        )},
+                        {"role": "user", "content": f"{history_context}Correct this transcription:\n{raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
@@ -567,6 +576,11 @@ def handle_transcription_result(text: str):
         return
 
     if text:
+        # Capture current selection and clear global buffer for this session
+        # This ensures only ONE paste happens per selection command, even if VAD/Flush both trigger
+        sel = _selected_text_buffer
+        _selected_text_buffer = ""
+
         def handle_cleanup_result(cleaned: str):
             if cleaned:
                 # Apply snippets (case-insensitive, handles possessives)
@@ -580,7 +594,7 @@ def handle_transcription_result(text: str):
         mlx_request_queue.put({
             "type": "cleanup",
             "text": text,
-            "selection": _selected_text_buffer,
+            "selection": sel,
             "callback": handle_cleanup_result
         })
 
@@ -618,6 +632,11 @@ def command_vad_loop():
             silence_frames += 1
 
         if has_speech and silence_frames >= silence_threshold_frames:
+            # If we have a selection, don't auto-transcribe partials.
+            # We want the full command before applying it to the selection.
+            if _selected_text_buffer:
+                continue
+
             captured = command_buffer
             command_buffer = []
             _raw_buffer = []
