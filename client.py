@@ -171,9 +171,11 @@ _warmup_done = False
 if platform_support.PLATFORM == "darwin":
     _MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
     _LLM_MODEL = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+    _REWRITE_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
 else:
     _MLX_MODEL = "openai/whisper-turbo"
     _LLM_MODEL = "microsoft/Phi-3.5-mini-instruct"
+    _REWRITE_MODEL = "microsoft/Phi-3.5-mini-instruct"
 
 _WHISPER_HALLUCINATIONS = {
     "thank you", "thanks for watching", "thank you for watching",
@@ -321,6 +323,8 @@ def play_cue(frequency=800, duration=0.08):
 mlx_request_queue = queue.Queue()
 _llm_model = None
 _llm_tokenizer = None
+_rewrite_model = None
+_rewrite_tokenizer = None
 
 def _init_inference_backend():
     """Initialize the appropriate ML backend for this platform. Returns (transcribe_fn, load_llm_fn, generate_fn)."""
@@ -415,7 +419,7 @@ def _init_inference_backend():
 
 def mlx_worker():
     """Dedicated thread for all Whisper and LLM operations."""
-    global _llm_model, _llm_tokenizer, _warmup_done
+    global _llm_model, _llm_tokenizer, _rewrite_model, _rewrite_tokenizer, _warmup_done
 
     transcribe_fn, warmup_whisper, load, generate = _init_inference_backend()
 
@@ -545,6 +549,12 @@ def mlx_worker():
 
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
+                    # Lazy-load the rewrite model (Phi-3.5-mini) for better quality
+                    if _rewrite_model is None:
+                        print(f"⏳ Loading rewrite model: {_REWRITE_MODEL}")
+                        _rewrite_model, _rewrite_tokenizer = load(_REWRITE_MODEL)
+                        print("✅ Rewrite model loaded")
+
                     messages = [
                         {"role": "system", "content": (
                             "You are a precision writing tool. Apply the <instruction> to the <content>.\n\n"
@@ -552,21 +562,19 @@ def mlx_worker():
                             "1. English ONLY.\n"
                             "2. Fix grammar and punctuation.\n"
                             "3. Maintain the user's original tone.\n"
-                            "4. Keep output tight and impactful. No fluff or conversational filler.\n"
-                            "5. Output ONLY the final text. No explanations, no preamble, no tags."
+                            "4. Output ONLY the final text. No explanations, no preamble, no tags."
                         )},
                         {"role": "user", "content": f"<instruction>{raw_text}</instruction>\n<content>\n{selection}\n</content>"}
                     ]
-                    prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                    prompt = _rewrite_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
                     # Dynamic max_tokens: ensure enough room for the rewrite but don't over-generate
-                    # Increased to 2000 to prevent cutoffs in long messages
                     dynamic_max = min(max(len(selection.split()) * 4, 300), 2000)
-                    
+
                     response = generate(
-                        _llm_model, 
-                        _llm_tokenizer, 
-                        prompt=prompt, 
+                        _rewrite_model,
+                        _rewrite_tokenizer,
+                        prompt=prompt,
                         max_tokens=dynamic_max,
                         temp=0.2
                     )
@@ -576,7 +584,7 @@ def mlx_worker():
                     for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>", "Note:", "---", "\n("]:
                         if stop_tag in response:
                             response = response.split(stop_tag)[0]
-                    
+
                     cleaned = response.strip().strip('"').strip("'")
                     if callback: callback(cleaned)
 
