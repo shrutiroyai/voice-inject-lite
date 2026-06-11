@@ -549,7 +549,7 @@ def mlx_worker():
                         {"role": "system", "content": (
                             "You are a precision writing tool. Apply the <instruction> to the <content>.\n\n"
                             "RULES:\n"
-                            "1. English ONLY.\n"
+                            "1. English ONLY. No Chinese characters.\n"
                             "2. Fix grammar and punctuation.\n"
                             "3. Maintain the user's original tone.\n"
                             "4. Keep output tight and impactful. No fluff or conversational filler.\n"
@@ -589,10 +589,11 @@ def mlx_worker():
                         {"role": "system", "content": (
                             "You are a transcription corrector. Fix grammar, punctuation, and self-corrections.\n\n"
                             "RULES:\n"
-                            "1. Resolve self-corrections (e.g., 'let's meet at 2... no 3' becomes 'Let's meet at 3').\n"
-                            "2. Preserve ALL details and information. Do not summarize or omit anything.\n"
-                            "3. Maintain the user's original tone. Do not make it more formal.\n"
-                            "4. Output ONLY the corrected text. No explanations."
+                            "1. English ONLY. No Chinese characters.\n"
+                            "2. Resolve self-corrections (e.g., 'let's meet at 2... no 3' becomes 'Let's meet at 3').\n"
+                            "3. Preserve ALL details and information. Do not summarize or omit anything.\n"
+                            "4. Maintain the user's original tone. Do not make it more formal.\n"
+                            "5. Output ONLY the corrected text. No explanations."
                         )},
                         {"role": "user", "content": f"{history_context}Text: {raw_text}"}
                     ]
