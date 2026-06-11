@@ -42,8 +42,6 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 
 # Global state
-command_recording = False     # Command mode: double-tap Left Option
-command_buffer = []           # Audio buffer for command mode
 _selected_text_buffer = ""    # Captured text from selection
 last_option_press = 0
 DOUBLE_TAP_THRESHOLD = 0.6
@@ -52,16 +50,129 @@ _recent_context = []          # Rolling context: list of (text, confidence) tupl
 _MAX_CONTEXT_ITEMS = 3
 _MIN_CONTEXT_CONFIDENCE = -0.4  # avg_logprob threshold
 
+class AudioRecorder:
+    def __init__(self):
+        self.is_recording = False
+        self.lock = threading.Lock()
+        self.max_samples = SAMPLE_RATE * 600  # 10 minutes
+        self.buffer = np.zeros(self.max_samples, dtype=np.int16)
+        self.write_pos = 0
+        self.total_samples = 0
+        self.session_start_samples = 0
+
+    def start(self):
+        with self.lock:
+            self.session_start_samples = self.total_samples
+            self.is_recording = True
+
+    def stop(self):
+        with self.lock:
+            self.is_recording = False
+            start_monotonic = self.session_start_samples
+            end_monotonic = self.total_samples
+            
+            num_samples = end_monotonic - start_monotonic
+            if num_samples <= 0:
+                return []
+            
+            if num_samples > self.max_samples:
+                num_samples = self.max_samples
+                start_monotonic = end_monotonic - num_samples
+                
+            start_idx = int(start_monotonic % self.max_samples)
+            end_idx = int(end_monotonic % self.max_samples)
+            
+            if start_idx < end_idx:
+                retrieved = self.buffer[start_idx:end_idx].copy()
+            else:
+                retrieved = np.concatenate([self.buffer[start_idx:], self.buffer[:end_idx]])
+            
+            # Apply input gain only when pulling audio
+            if _input_gain != 1.0:
+                retrieved = np.clip(retrieved.astype(np.float32) * _input_gain, -32768, 32767).astype(np.int16)
+            
+            return [retrieved]
+
+    def clear(self):
+        with self.lock:
+            self.is_recording = False
+
+    def add_chunk(self, indata):
+        """Always record into the circular buffer, regardless of is_recording."""
+        with self.lock:
+            data = indata.flatten()
+            n = len(data)
+            
+            if n > self.max_samples:
+                data = data[-self.max_samples:]
+                n = self.max_samples
+            
+            end_pos = self.write_pos + n
+            if end_pos <= self.max_samples:
+                self.buffer[self.write_pos:end_pos] = data
+            else:
+                first_part = self.max_samples - self.write_pos
+                self.buffer[self.write_pos:] = data[:first_part]
+                self.buffer[:end_pos % self.max_samples] = data[first_part:]
+            
+            self.write_pos = (self.write_pos + n) % self.max_samples
+            self.total_samples += n
+
+    def get_monotonic_range(self, start_monotonic, end_monotonic):
+        with self.lock:
+            num_samples = end_monotonic - start_monotonic
+            if num_samples <= 0:
+                return np.array([], dtype=np.int16)
+            
+            if num_samples > self.max_samples:
+                num_samples = self.max_samples
+                start_monotonic = end_monotonic - num_samples
+                
+            start_idx = int(start_monotonic % self.max_samples)
+            end_idx = int(end_monotonic % self.max_samples)
+            
+            if start_idx < end_idx:
+                retrieved = self.buffer[start_idx:end_idx].copy()
+            else:
+                retrieved = np.concatenate([self.buffer[start_idx:], self.buffer[:end_idx]])
+            
+            # Apply input gain
+            if _input_gain != 1.0:
+                retrieved = np.clip(retrieved.astype(np.float32) * _input_gain, -32768, 32767).astype(np.int16)
+            
+            return retrieved
+
+    def get_raw_tail(self, frames):
+        """Returns the last N frames from the circular buffer as a flat numpy array."""
+        with self.lock:
+            if frames <= 0 or self.total_samples == 0:
+                return np.array([], dtype=np.int16)
+            
+            n = min(frames, self.total_samples, self.max_samples)
+            
+            end_monotonic = self.total_samples
+            start_monotonic = end_monotonic - n
+            
+            start_idx = int(start_monotonic % self.max_samples)
+            end_idx = int(end_monotonic % self.max_samples)
+            
+            if start_idx < end_idx:
+                return self.buffer[start_idx:end_idx].copy()
+            else:
+                return np.concatenate([self.buffer[start_idx:], self.buffer[:end_idx]])
+
+recorder = AudioRecorder()
+
 # Message queue for WebSocket
 message_queue = queue.Queue()
 ws_connected = False
 _warmup_done = False
 
 if platform_support.PLATFORM == "darwin":
-    _MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
+    _MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
     _LLM_MODEL = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
 else:
-    _MLX_MODEL = "openai/whisper-large-v3"
+    _MLX_MODEL = "openai/whisper-turbo"
     _LLM_MODEL = "microsoft/Phi-3.5-mini-instruct"
 
 _WHISPER_HALLUCINATIONS = {
@@ -317,8 +428,10 @@ def mlx_worker():
 
         try:
             hf_token = get_config_setting("huggingface_token", "").strip()
-            if hf_token:
+            if hf_token and hf_token.startswith("hf_"):
                 os.environ["HF_TOKEN"] = hf_token
+            elif "HF_TOKEN" in os.environ:
+                del os.environ["HF_TOKEN"]
 
             if req_type == "warmup":
                 print("⏳ Warming up models...")
@@ -358,8 +471,8 @@ def mlx_worker():
                 vocab = get_vocabulary()
 
                 prompt_parts = []
-                # Inject a tone hint to Whisper to encourage expressive punctuation
-                prompt_parts.append("Hello! Use exclamation marks, question marks, and expressive punctuation where appropriate.")
+                # Simple style hint - Whisper uses this as a phonetic/punctuation guide
+                prompt_parts.append("Hello! How are you?")
                 if vocab:
                     prompt_parts.append(vocab)
                 if _recent_context:
@@ -369,7 +482,7 @@ def mlx_worker():
 
                 print(f"🎙️ Transcribing ({len(audio)/SAMPLE_RATE:.1f}s)...")
                 result = transcribe_fn(audio, initial_prompt)
-                print(f"📄 Raw Transcription: {result.get('text', '').strip()}")
+                print(f"📄 Raw Transcription ({request.get('source', 'Unknown')}): {result.get('text', '').strip()}")
 
                 segments = result.get("segments", [])
                 
@@ -380,8 +493,8 @@ def mlx_worker():
                 for s in segments:
                     no_speech = s.get("no_speech_prob", 0)
                     confidence = s.get("avg_logprob", -1)
-                    # Tighten thresholds: Whisper often hallucinates during silence
-                    if no_speech < 0.45 and confidence > -0.8:
+                    # Tighten thresholds: Turbo is more 'confident' in hallucinations
+                    if no_speech < 0.40 and confidence > -0.6:
                         valid_segments.append(s)
                 
                 filtered_text = " ".join([s.get("text", "").strip() for s in valid_segments])
@@ -401,12 +514,19 @@ def mlx_worker():
                     if filtered_text:
                         print(f"✅ Filtered Result: {filtered_text}")
 
-                if filtered_text and avg_confidence > _MIN_CONTEXT_CONFIDENCE:
+                if filtered_text and avg_confidence > _MIN_CONTEXT_CONFIDENCE and request.get("source") != "Partial":
                     _recent_context.append((filtered_text, avg_confidence))
                     while len(_recent_context) > _MAX_CONTEXT_ITEMS:
                         _recent_context.pop(0)
 
-                if callback: callback(filtered_text)
+                if callback: 
+                    # If it's the standard transcription callback, pass the source
+                    import inspect
+                    sig = inspect.signature(callback)
+                    if "source" in sig.parameters:
+                        callback(filtered_text, source=request.get("source", "Unknown"))
+                    else:
+                        callback(filtered_text)
 
             elif req_type == "cleanup":
                 raw_text = request.get("text")
@@ -427,31 +547,33 @@ def mlx_worker():
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
                     messages = [
                         {"role": "system", "content": (
-                            "You are a precision writing tool. You will receive an <instruction> and <content>.\n\n"
-                            "YOUR TASK:\n"
-                            "1. Apply the <instruction> to the <content>. This may require expanding on brief pointers or rewriting the text entirely.\n"
-                            "2. Keep your writing tight and impactful. Avoid fluff and AI-sounding filler.\n"
-                            "3. Use a natural, human tone with professional punctuation. Avoid being flat, but only use exclamation marks when high energy is explicitly warranted. If the instruction is neutral, keep the tone neutral.\n\n"
-                            "OUTPUT FORMAT:\n"
-                            "Output ONLY the final text. Do not output the tags. No explanations, no preamble. English only."
+                            "You are a precision writing tool. Apply the <instruction> to the <content>.\n\n"
+                            "RULES:\n"
+                            "1. English ONLY.\n"
+                            "2. Fix grammar and punctuation.\n"
+                            "3. Maintain the user's original tone.\n"
+                            "4. Keep output tight and impactful. No fluff or conversational filler.\n"
+                            "5. Output ONLY the final text. No explanations, no preamble, no tags."
                         )},
                         {"role": "user", "content": f"<instruction>{raw_text}</instruction>\n<content>\n{selection}\n</content>"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-                    # temp=0.2 allows for a more natural tone while remaining fast
-                    # Increased to 1000 to allow for explicit elaboration/emails
+                    # Dynamic max_tokens: ensure enough room for the rewrite but don't over-generate
+                    # Increased to 2000 to prevent cutoffs in long messages
+                    dynamic_max = min(max(len(selection.split()) * 4, 300), 2000)
+                    
                     response = generate(
                         _llm_model, 
                         _llm_tokenizer, 
                         prompt=prompt, 
-                        max_tokens=1000,
+                        max_tokens=dynamic_max,
                         temp=0.2
                     )
                     print("✨ LLM response received")
 
-                    # Handle multiple potential end tags
-                    for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>"]:
+                    # Handle multiple potential end tags and conversational filler
+                    for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>", "Note:", "---", "\n("]:
                         if stop_tag in response:
                             response = response.split(stop_tag)[0]
                     
@@ -465,21 +587,17 @@ def mlx_worker():
 
                     messages = [
                         {"role": "system", "content": (
-                            "You are a text corrector. You receive raw speech-to-text output and return the SAME text with natural grammar and inflection.\n\n"
+                            "You are a transcription corrector. Fix grammar, punctuation, and self-corrections.\n\n"
                             "RULES:\n"
-                            "1. Use standard professional punctuation. Only use exclamation marks for clear high enthusiasm.\n"
-                            "2. Use the provided <history> ONLY to disambiguate phonetic errors. NEVER repeat or include the history in your output.\n"
-                            "3. Just return the corrected version of the transcription. Nothing more.\n"
-                            "4. English only. Fix capitalization, punctuation, and mistranscriptions.\n"
-                            "5. HALLUCINATION DEFENSE: If the transcription appears to be a common AI hallucination (e.g., 'Thanks for watching', 'Please subscribe', or 'I'm not sure if I'm doing this right'), output an EMPTY STRING.\n\n"
-                            "OUTPUT FORMAT:\n"
-                            "Output ONLY the corrected text. No explanations, no tags."
+                            "1. Resolve self-corrections (e.g., 'let's meet at 2... no 3' becomes 'Let's meet at 3').\n"
+                            "2. Maintain the user's original tone. Do not make it more formal or 'professional'.\n"
+                            "3. Output ONLY the corrected text. No explanations."
                         )},
-                        {"role": "user", "content": f"{history_context}Correct this transcription:\n{raw_text}"}
+                        {"role": "user", "content": f"{history_context}Text: {raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150, temp=0.2)
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150, temp=0.1)
 
                     # Handle multiple potential end tags
                     for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>"]:
@@ -513,17 +631,8 @@ def mlx_worker():
 # Start worker thread
 threading.Thread(target=mlx_worker, daemon=True).start()
 
-_raw_buffer = []  # Pre-gain buffer for VAD checks
-
 def audio_callback(indata, frames, time_info, status):
-    global _raw_buffer
-    if command_recording:
-        _raw_buffer.append(indata.copy())
-        if _input_gain != 1.0:
-            amplified = np.clip(indata.astype(np.float32) * _input_gain, -32768, 32767).astype(np.int16)
-            command_buffer.append(amplified)
-        else:
-            command_buffer.append(indata.copy())
+    recorder.add_chunk(indata)
 
 def paste_text(text: str):
     """Copy to clipboard and auto-paste. Platform-aware."""
@@ -562,74 +671,129 @@ def get_cached_snippets():
     _snippet_last_load = now
     return compiled
 
-def handle_transcription_result(text: str):
+def handle_transcription_result(text: str, source: str = "Unknown"):
     """Callback from worker thread when transcription is done."""
-    global test_mode_active, _selected_text_buffer
-    if test_mode_active:
-        res_text = text if text else "(No speech detected)"
-        print(f"🔬 Test Result: {res_text}")
-        message_queue.put({"type": "test_mic_result", "text": res_text})
-        test_mode_active = False
-        _is_processing = False
-        return
+    global _is_processing
+    keep_locked = False
+    try:
+        global test_mode_active, _selected_text_buffer
+        if test_mode_active:
+            res_text = text if text else "(No speech detected)"
+            print(f"🔬 Test Result ({source}): {res_text}")
+            message_queue.put({"type": "test_mic_result", "text": res_text})
+            test_mode_active = False
+            return
 
+        if text:
+            # Capture current selection and clear global buffer for this session
+            sel = _selected_text_buffer
+            _selected_text_buffer = ""
+
+            def handle_cleanup_result(cleaned: str):
+                global _is_processing
+                try:
+                    if cleaned:
+                        # Apply snippets
+                        snippets = get_cached_snippets()
+                        for pattern, expansion in snippets:
+                            cleaned = pattern.sub(expansion, cleaned)
+                        
+                        print(f"✨ {cleaned}")
+                        paste_text(cleaned)
+                finally:
+                    _is_processing = False
+            
+            if sel:
+                # Selection Command Mode: Use LLM
+                print(f"🧠 Processing rewrite for {len(sel)} chars...")
+                keep_locked = True
+                mlx_request_queue.put({
+                    "type": "cleanup",
+                    "text": text,
+                    "selection": sel,
+                    "callback": handle_cleanup_result
+                })
+            else:
+                # Standard Dictation: Use LLM for cleanup/punctuation with high speed
+                print(f"✨ Cleaning up transcription...")
+                keep_locked = True
+                mlx_request_queue.put({
+                    "type": "cleanup",
+                    "text": text,
+                    "selection": "",
+                    "callback": handle_cleanup_result
+                })
+        else:
+            print("📭 No text transcribed (or filtered out)")
+    finally:
+        if not keep_locked:
+            _is_processing = False
+
+def handle_partial_result(text, source="Partial"):
+    """Handle background partial transcriptions."""
     if text:
-        # Capture current selection and clear global buffer for this session
-        # This ensures only ONE paste happens per selection command, even if VAD/Flush both trigger
-        sel = _selected_text_buffer
-        _selected_text_buffer = ""
-
-        def handle_cleanup_result(cleaned: str):
-            global _is_processing
-            try:
-                if cleaned:
-                    # Apply snippets (case-insensitive, handles possessives)
-                    snippets = get_cached_snippets()
-                    for pattern, expansion in snippets:
-                        cleaned = pattern.sub(expansion, cleaned)
-                    
-                    print(f"✨ {cleaned}")
-                    paste_text(cleaned)
-            finally:
-                # Unlock for the next session
-                _is_processing = False
-        
-        mlx_request_queue.put({
-            "type": "cleanup",
-            "text": text,
-            "selection": sel,
-            "callback": handle_cleanup_result
-        })
-    else:
-        # Reset the processing lock if no text was transcribed (silence/filtered)
-        _is_processing = False
+        print(f"[PARTIAL] {text}")
 
 def command_vad_loop():
-    global command_buffer, _raw_buffer
     import webrtcvad
     vad = webrtcvad.Vad(3)
     frame_duration_ms = 30
     frame_size = int(SAMPLE_RATE * frame_duration_ms / 1000)
-    silence_threshold_frames = int(0.8 * 1000 / frame_duration_ms)
+    silence_threshold_frames = int(0.4 * 1000 / frame_duration_ms)
     silence_frames = 0
     has_speech = False
+    
+    last_partial_trigger_samples = recorder.session_start_samples
 
-    while command_recording:
+    while recorder.is_recording:
         time.sleep(0.1)
-        if not _raw_buffer:
+        
+        # Rolling window peeking: every 10 seconds of recorded audio, trigger a partial transcribe
+        total_samples = recorder.total_samples
+        if total_samples - last_partial_trigger_samples > SAMPLE_RATE * 10:
+            # Extract up to 15 seconds
+            window_size = SAMPLE_RATE * 15
+            start_m = max(recorder.session_start_samples, total_samples - window_size)
+            end_m = total_samples
+            
+            partial_audio = recorder.get_monotonic_range(start_m, end_m)
+            if len(partial_audio) > 0:
+                audio_float = partial_audio.astype(np.float32).flatten() / 32768.0
+                mlx_request_queue.put({
+                    "type": "transcribe",
+                    "audio": audio_float,
+                    "source": "Partial",
+                    "callback": handle_partial_result
+                })
+            last_partial_trigger_samples = total_samples
+
+        # Check the most recent chunk for ANY speech frames
+        # We look at the last 100-200ms and scan for human voice signatures
+        recent_audio = recorder.get_raw_tail(frame_size * 2)
+        
+        if len(recent_audio) < frame_size:
             continue
 
-        # Use pre-gain audio for VAD so amplified noise doesn't fool it
-        raw_audio = np.concatenate(_raw_buffer, axis=0).flatten()
-        if len(raw_audio) < frame_size:
-            continue
-
-        last_frame = raw_audio[-frame_size:]
-        frame_bytes = last_frame.astype(np.int16).tobytes()
-        try:
-            is_speech = vad.is_speech(frame_bytes, SAMPLE_RATE)
-        except Exception:
-            is_speech = True
+        # Scan frames in the recent audio for speech
+        is_speech = False
+        
+        # ENERGY GUARDRAIL: If the volume is too low, don't even check the voice signature.
+        # This prevents quiet background noise from being mistaken for speech.
+        rms = np.sqrt(np.mean(recent_audio.astype(np.float64) ** 2))
+        min_energy = int(get_config_setting("min_speech_energy", "250"))
+        
+        if rms > min_energy * 0.7: # Slightly more sensitive than the final flush check
+            for i in range(0, len(recent_audio) - frame_size, frame_size):
+                frame = recent_audio[i : i + frame_size]
+                fb = frame.astype(np.int16).tobytes()
+                try:
+                    if vad.is_speech(fb, SAMPLE_RATE):
+                        is_speech = True
+                        break
+                except Exception:
+                    continue
+        else:
+            is_speech = False # Force silence if too quiet
 
         if is_speech:
             has_speech = True
@@ -637,9 +801,17 @@ def command_vad_loop():
         else:
             silence_frames += 1
 
+        # VAD AUTO-TRIGGER DISABLED
+        # We no longer auto-transcribe on silence to prevent cutting the user off.
+        # Transcription only happens when the user manually stops the recording.
+        continue
+
         if has_speech and silence_frames >= silence_threshold_frames:
+            # Check if user manually stopped during this cycle
+            if not recorder.is_recording:
+                break
+
             # If we have a selection, don't auto-transcribe partials.
-            # We want the full command before applying it to the selection.
             if _selected_text_buffer:
                 continue
 
@@ -647,15 +819,19 @@ def command_vad_loop():
             global _is_processing
             _is_processing = True
 
-            captured = command_buffer
-            command_buffer = []
-            _raw_buffer = []
+            captured = recorder.stop() # This also sets is_recording = False
+            # recorder.clear() # Not needed if stop() is enough, but VAD usually stops the session
             silence_frames = 0
             has_speech = False
+
+            if not captured:
+                _is_processing = False
+                break
 
             audio_data = np.concatenate(captured, axis=0)
 
             if len(audio_data) < SAMPLE_RATE * 0.3:
+                _is_processing = False
                 continue
 
             rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
@@ -663,6 +839,7 @@ def command_vad_loop():
             # Re-read config for real-time UI updates
             min_energy = int(get_config_setting("min_speech_energy", "250"))
             if rms < min_energy:
+                _is_processing = False
                 continue
             
             audio_float = audio_data.astype(np.float32).flatten() / 32768.0
@@ -670,19 +847,20 @@ def command_vad_loop():
             mlx_request_queue.put({
                 "type": "transcribe",
                 "audio": audio_float,
+                "source": "VAD",
                 "callback": handle_transcription_result
             })
 
-_MAX_WHISPER_SECONDS = 20  # Cap audio chunks to prevent hallucination loops
+_MAX_WHISPER_SECONDS = 60  # Allow for long-form dictation up to 1 minute
 
 def command_flush_remaining():
-    global command_buffer, _raw_buffer, _is_processing
+    global _is_processing
     if _is_processing:
+        # VAD likely already sent the last chunk, so we just return
         return
     _is_processing = True
 
-    captured, command_buffer = command_buffer, []
-    _raw_buffer = []
+    captured = recorder.stop()
     if not captured:
         _is_processing = False
         return
@@ -704,6 +882,7 @@ def command_flush_remaining():
     mlx_request_queue.put({
         "type": "transcribe",
         "audio": audio_float,
+        "source": "Flush",
         "callback": handle_transcription_result
     })
     print("📋 Command mode done.\n")
@@ -714,56 +893,61 @@ _CONTEXT_RESET_SECONDS = 30
 _is_processing = False
 
 def toggle_command():
-    global command_recording, command_buffer, _command_cooldown, _last_recording_end, _selected_text_buffer, _is_processing
-    now = time.time()
-    if now - _command_cooldown < 1.0 or _is_processing:
-        return
-
-    if not command_recording:
-        # Reset context if it's been a while since last session
-        if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
-            _recent_context.clear()
+    try:
+        global _command_cooldown, _last_recording_end, _selected_text_buffer, _is_processing
+        now = time.time()
         
-        # Check for selection at the start (fixes repetitive beeping)
-        _selected_text_buffer = platform_support.get_selected_text()
-        if _selected_text_buffer:
-            print(f"📋 Command Mode: Selection captured ({len(_selected_text_buffer)} chars)")
-        else:
-            print("🎤 Transcription Mode: No selection")
-
-        command_recording = True
-        command_buffer = []
-        _raw_buffer.clear()
-        play_cue(frequency=1000) # High blip for START
-        print("🎤 Command mode: recording...")
-        message_queue.put({"type": "status", "recording": True, "mode": "command"})
-        threading.Thread(target=command_vad_loop, daemon=True).start()
-    else:
-        # Mid-session check: Did the user select new text?
-        new_selection = platform_support.get_selected_text()
-        if new_selection and new_selection != _selected_text_buffer:
-            _selected_text_buffer = new_selection
-            print(f"🔄 Selection updated mid-session ({len(new_selection)} chars)")
-            play_cue(frequency=800) # Mid blip for UPDATE
+        # Allow STOPPING even if _is_processing is True
+        if now - _command_cooldown < 0.5:
+            return
+        if not recorder.is_recording and _is_processing:
             return
 
-        command_recording = False
-        _command_cooldown = now
-        _last_recording_end = now
-        play_cue(frequency=600) # Low blip for STOP
-        print("⏹️ Command mode: finishing up...")
-        message_queue.put({"type": "status", "recording": False, "mode": "command"})
-        threading.Thread(target=command_flush_remaining, daemon=True).start()
+        if not recorder.is_recording:
+            # Reset context if it's been a while since last session
+            if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
+                _recent_context.clear()
+            
+            # Check for selection at the start
+            _selected_text_buffer = platform_support.get_selected_text()
+            if _selected_text_buffer:
+                print(f"📋 Command Mode: Selection captured ({len(_selected_text_buffer)} chars)")
+            else:
+                print("🎤 Transcription Mode: No selection")
+
+            recorder.start()
+            play_cue(frequency=1000) # High blip for START
+            print("🎤 Command mode: recording...")
+            message_queue.put({"type": "status", "recording": True, "mode": "command"})
+            threading.Thread(target=command_vad_loop, daemon=True).start()
+        else:
+            # Manual STOP
+            # Note: recorder.stop() is called inside command_flush_remaining
+            # But we set is_recording = False here to stop the VAD loop immediately
+            recorder.is_recording = False
+            _command_cooldown = now
+            _last_recording_end = now
+            play_cue(frequency=600) # Low blip for STOP
+            print("⏹️ Command mode: stopping...")
+            message_queue.put({"type": "status", "recording": False, "mode": "command"})
+            threading.Thread(target=command_flush_remaining, daemon=True).start()
+    except Exception as e:
+        print(f"⚠️ Toggle command error: {e}")
+        recorder.clear()
+        _is_processing = False
 
 def on_press(key):
-    global last_option_press
-    if key == platform_support.get_hotkey_key():
-        current_time = time.time()
-        if (current_time - last_option_press) < DOUBLE_TAP_THRESHOLD:
-            toggle_command()
-            last_option_press = 0
-        else:
-            last_option_press = current_time
+    try:
+        global last_option_press
+        if key == platform_support.get_hotkey_key():
+            current_time = time.time()
+            if (current_time - last_option_press) < DOUBLE_TAP_THRESHOLD:
+                toggle_command()
+                last_option_press = 0
+            else:
+                last_option_press = current_time
+    except Exception as e:
+        print(f"⚠️ Keyboard handler error: {e}")
 
 async def websocket_client():
     global ws_connected
@@ -787,16 +971,16 @@ async def websocket_client():
                         except Exception:
                             break
                 async def receive_messages():
-                    global command_recording, test_mode_active
+                    global test_mode_active
                     async for message in websocket:
                         try:
                             msg = json.loads(message)
                             if msg.get("type") == "test_mic_start":
                                 test_mode_active = True
-                                if not command_recording:
+                                if not recorder.is_recording:
                                     toggle_command()
                             elif msg.get("type") == "test_mic_stop":
-                                if command_recording:
+                                if recorder.is_recording:
                                     toggle_command()
                         except Exception:
                             pass

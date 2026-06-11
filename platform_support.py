@@ -28,17 +28,8 @@ def get_selected_text():
     if PLATFORM == "darwin":
         marker = "---VOICE_INJECT_EMPTY---"
         
-        prev_vol = "75"
         try:
-            # Use a more robust AppleScript syntax
-            res = subprocess.run(["osascript", "-e", "get alert volume of (get volume settings)"], capture_output=True, text=True)
-            if res.returncode == 0:
-                prev_vol = res.stdout.strip()
-                subprocess.run(["osascript", "-e", "set volume alert volume 0"])
-        except Exception:
-            pass
-
-        try:
+            # Clear clipboard with marker
             subprocess.run(["pbcopy"], input=marker.encode(), check=True)
             
             from pynput.keyboard import Key, Controller
@@ -47,21 +38,18 @@ def get_selected_text():
                 keyboard.press('c')
                 keyboard.release('c')
                 
-            time.sleep(0.25) # Slightly longer for safety
+            time.sleep(0.15) # Faster capture
             res = subprocess.run(["pbpaste"], capture_output=True, text=True)
             text = res.stdout.strip()
-        finally:
-            # Restore alert volume regardless of success
-            try:
-                subprocess.run(["osascript", "-e", f"set volume alert volume {prev_vol}"])
-            except Exception:
-                pass
 
-        if text == marker:
-            # Clear marker from clipboard so user doesn't accidentally paste it
-            subprocess.run(["pbcopy"], input=b"", check=True)
+            if text == marker:
+                # Clear marker from clipboard
+                subprocess.run(["pbcopy"], input=b"", check=True)
+                return ""
+            return text
+        except Exception as e:
+            print(f"⚠️ Selection capture failed: {e}")
             return ""
-        return text
     elif PLATFORM == "win32":
         try:
             subprocess.run(["powershell", "-Command", "Set-Clipboard -Value ''"], check=True, shell=True)
