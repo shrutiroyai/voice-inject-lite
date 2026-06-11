@@ -123,7 +123,9 @@ open_browser() {
 
 register_alias() {
     local SHELL_CONFIG=""
-    local ALIAS_LINE="alias voice=\"$SCRIPT_DIR/install.sh\""
+    local ALIAS_NAME="voice"
+    local ALIAS_LINE="alias $ALIAS_NAME=\"cd '$SCRIPT_DIR' && git pull --quiet && ./install.sh\""
+    
     if echo "$SHELL" | grep -q "zsh"; then
         SHELL_CONFIG="$HOME/.zshrc"
     elif echo "$SHELL" | grep -q "bash"; then
@@ -131,13 +133,18 @@ register_alias() {
     fi
 
     if [ -n "$SHELL_CONFIG" ]; then
-        if ! grep -qF "$ALIAS_LINE" "$SHELL_CONFIG" 2>/dev/null; then
-            echo "" >> "$SHELL_CONFIG"
-            echo "# Voice Inject Lite" >> "$SHELL_CONFIG"
-            echo "$ALIAS_LINE" >> "$SHELL_CONFIG"
-            echo -e "${GREEN}✓ Registered 'voice' command in $SHELL_CONFIG${NC}"
-            echo -e "${BLUE}Run 'source $(basename "$SHELL_CONFIG")' to use it.${NC}"
+        # Remove any existing alias with the same name to allow override
+        if grep -q "alias $ALIAS_NAME=" "$SHELL_CONFIG" 2>/dev/null; then
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "/alias $ALIAS_NAME=/d" "$SHELL_CONFIG"
+            else
+                sed -i "/alias $ALIAS_NAME=/d" "$SHELL_CONFIG"
+            fi
         fi
+        
+        echo "$ALIAS_LINE" >> "$SHELL_CONFIG"
+        echo -e "${GREEN}✓ Registered/Updated '$ALIAS_NAME' command in $SHELL_CONFIG${NC}"
+        echo -e "${BLUE}The 'voice' command will now automatically pull latest changes from GitHub.${NC}"
     fi
 }
 
