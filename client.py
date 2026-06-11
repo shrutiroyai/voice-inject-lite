@@ -442,7 +442,7 @@ def mlx_worker():
                 message_queue.put({"type": "warmup_progress", "percent": 10, "message": "Starting warmup..."})
 
                 # Load LLM first
-                message_queue.put({"type": "warmup_progress", "percent": 20, "message": "Loading LLM..."})
+                message_queue.put({"type": "warmup_progress", "percent": 15, "message": "Downloading dictation model (first run only)..."})
                 if _llm_model is None:
                     try:
                         print(f"⏳ Loading LLM: {_LLM_MODEL}")
@@ -454,7 +454,7 @@ def mlx_worker():
                         time.sleep(2)
 
                 # Then Whisper
-                message_queue.put({"type": "warmup_progress", "percent": 50, "message": "LLM ready. Loading Whisper..."})
+                message_queue.put({"type": "warmup_progress", "percent": 50, "message": "Downloading speech recognition model (first run only)..."})
                 try:
                     print(f"⏳ Loading Whisper: {_MLX_MODEL}")
                     warmup_whisper()
@@ -595,15 +595,12 @@ def mlx_worker():
 
                     messages = [
                         {"role": "system", "content": (
-                            "You are a transcription corrector. Fix grammar, punctuation, and self-corrections.\n\n"
-                            "RULES:\n"
-                            "1. English ONLY.\n"
-                            "2. Resolve self-corrections (e.g., 'let's meet at 2... no 3' becomes 'Let's meet at 3').\n"
-                            "3. Preserve ALL details and information. Do not summarize or omit anything.\n"
-                            "4. Maintain the user's original tone. Do not make it more formal.\n"
-                            "5. Output ONLY the corrected text. No explanations."
+                            "Rewrite the user's spoken text. Remove hesitations and self-corrections, "
+                            "keeping only the speaker's final intended meaning. Keep all facts. Fix grammar. "
+                            "English only. Output only the rewritten text.\n"
+                            "<critical>Preserve the user's tone. Do not make it more formal.</critical>"
                         )},
-                        {"role": "user", "content": f"{history_context}Text: {raw_text}"}
+                        {"role": "user", "content": f"{history_context}{raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 

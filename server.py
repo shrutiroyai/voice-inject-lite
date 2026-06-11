@@ -256,6 +256,7 @@ async def get_ui():
 
         .loading-overlay h2 { font-size: 18px; margin-bottom: 8px; }
         .loading-overlay p { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+        .loading-tip { margin-top: 24px; font-size: 12px; opacity: 0.6; margin-bottom: 0; }
 
         .progress-container {
             width: 240px; height: 4px; background: var(--border);
@@ -443,6 +444,7 @@ async def get_ui():
             <div class="progress-container">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
+            <p class="loading-tip">Tip: A dedicated microphone significantly improves transcription accuracy.</p>
         </div>
 
         <div class="header">
