@@ -570,6 +570,7 @@ def handle_transcription_result(text: str):
         print(f"🔬 Test Result: {res_text}")
         message_queue.put({"type": "test_mic_result", "text": res_text})
         test_mode_active = False
+        _is_processing = False
         return
 
     if text:
@@ -599,6 +600,9 @@ def handle_transcription_result(text: str):
             "selection": sel,
             "callback": handle_cleanup_result
         })
+    else:
+        # Reset the processing lock if no text was transcribed (silence/filtered)
+        _is_processing = False
 
 def command_vad_loop():
     global command_buffer, _raw_buffer
@@ -680,6 +684,7 @@ def command_flush_remaining():
     captured, command_buffer = command_buffer, []
     _raw_buffer = []
     if not captured:
+        _is_processing = False
         return
 
     audio_data = np.concatenate(captured, axis=0)
@@ -692,6 +697,7 @@ def command_flush_remaining():
     rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
     min_energy = int(get_config_setting("min_speech_energy", "250"))
     if rms < min_energy:
+        _is_processing = False
         return
 
     audio_float = audio_data.astype(np.float32).flatten() / 32768.0
