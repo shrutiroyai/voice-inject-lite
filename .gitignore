@@ -6,3 +6,5 @@ __pycache__/
 /tmp/
 *.tmp
 .agent.md
+finetune/adapters/
+finetune/fused_model/

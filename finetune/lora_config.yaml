@@ -1,0 +1,11 @@
+lora_parameters:
+  dropout: 0.05
+  keys:
+  - self_attn.q_proj
+  - self_attn.v_proj
+  - self_attn.k_proj
+  - self_attn.o_proj
+  - mlp.gate_proj
+  - mlp.down_proj
+  rank: 16
+  scale: 0.125

@@ -168,10 +168,12 @@ message_queue = queue.Queue()
 ws_connected = False
 _warmup_done = False
 
+_FUSED_MODEL = "shruroy/Qwen2.5-1.5B-voice-inject"
+
 if platform_support.PLATFORM == "darwin":
     _MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
-    _LLM_MODEL = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
-    _REWRITE_MODEL = "mlx-community/Phi-3.5-mini-instruct-4bit"
+    _LLM_MODEL = _FUSED_MODEL
+    _REWRITE_MODEL = _FUSED_MODEL
 else:
     _MLX_MODEL = "openai/whisper-turbo"
     _LLM_MODEL = "microsoft/Phi-3.5-mini-instruct"
@@ -551,11 +553,13 @@ def mlx_worker():
 
                 if selection:
                     # STRICT COMMAND MODE: use selection as content, voice as instruction
-                    # Lazy-load the rewrite model (Phi-3.5-mini) for better quality
                     if _rewrite_model is None:
-                        print(f"⏳ Loading rewrite model: {_REWRITE_MODEL}")
-                        _rewrite_model, _rewrite_tokenizer = load(_REWRITE_MODEL)
-                        print("✅ Rewrite model loaded")
+                        if _LLM_MODEL == _REWRITE_MODEL:
+                            _rewrite_model, _rewrite_tokenizer = _llm_model, _llm_tokenizer
+                        else:
+                            print(f"⏳ Loading rewrite model: {_REWRITE_MODEL}")
+                            _rewrite_model, _rewrite_tokenizer = load(_REWRITE_MODEL)
+                            print("✅ Rewrite model loaded")
 
                     messages = [
                         {"role": "system", "content": (
@@ -564,7 +568,8 @@ def mlx_worker():
                             "1. English ONLY.\n"
                             "2. Fix grammar and punctuation.\n"
                             "3. Maintain the user's original tone.\n"
-                            "4. Output ONLY the final text. No explanations, no preamble, no tags."
+                            "4. Preserve ALL points and reasoning. Omit nothing. Make only light structural changes.\n"
+                            "5. Output ONLY the final text. No explanations, no preamble, no tags."
                         )},
                         {"role": "user", "content": f"<instruction>{raw_text}</instruction>\n<content>\n{selection}\n</content>"}
                     ]
@@ -597,10 +602,13 @@ def mlx_worker():
 
                     messages = [
                         {"role": "system", "content": (
-                            "Rewrite the user's spoken text. Remove hesitations and self-corrections, "
-                            "keeping only the speaker's final intended meaning. Keep all facts. Fix grammar. "
-                            "English only. Output only the rewritten text.\n"
-                            "<critical>Preserve the user's tone. Do not make it more formal.</critical>"
+                            "Clean up the user's spoken text for grammar and punctuation. "
+                            "Resolve self-corrections by keeping only the speaker's final version. "
+                            "Remove filler words (um, uh, like, you know).\n\n"
+                            "Preserve ALL points and reasoning. Omit nothing. "
+                            "Do NOT shorten, summarize, or rephrase. Keep the full sentence structure "
+                            "and all details intact. The output should be nearly the same length as the input.\n\n"
+                            "English only. Output only the cleaned text."
                         )},
                         {"role": "user", "content": f"{history_context}{raw_text}"}
                     ]
@@ -926,9 +934,8 @@ def toggle_command():
             return
 
         if not recorder.is_recording:
-            # Reset context if it's been a while since last session
-            if _recent_context and (now - _last_recording_end) > _CONTEXT_RESET_SECONDS:
-                _recent_context.clear()
+            # Always start fresh — prevents old context from bleeding into new sessions
+            _recent_context.clear()
             
             # Check for selection at the start
             _selected_text_buffer = platform_support.get_selected_text()

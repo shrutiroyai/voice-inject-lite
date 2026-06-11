@@ -27,12 +27,34 @@ ADAPTER_DIR = SCRIPT_DIR / "adapters"
 FUSED_DIR = SCRIPT_DIR / "fused_model"
 
 LORA_CONFIG = {
-    "iters": 200,
-    "learning_rate": 1e-5,
+    "iters": 600,
+    "learning_rate": 5e-5,
     "batch_size": 1,
-    "lora_layers": 8,
-    "lora_rank": 8,
+    "num_layers": 16,
+    "lora_rank": 16,
 }
+
+CONFIG_FILE = SCRIPT_DIR / "lora_config.yaml"
+
+
+def write_lora_config():
+    """Write a YAML config for LoRA rank since the CLI doesn't expose it."""
+    import yaml
+    rank = LORA_CONFIG["lora_rank"]
+    config = {
+        "lora_parameters": {
+            "rank": rank,
+            "scale": round(2.0 / rank, 4),
+            "dropout": 0.05,
+            "keys": [
+                "self_attn.q_proj", "self_attn.v_proj",
+                "self_attn.k_proj", "self_attn.o_proj",
+                "mlp.gate_proj", "mlp.down_proj",
+            ],
+        }
+    }
+    with open(CONFIG_FILE, "w") as f:
+        yaml.dump(config, f)
 
 
 def run_cmd(cmd, desc):
@@ -48,19 +70,21 @@ def run_cmd(cmd, desc):
 
 
 def main():
-    print("🎯 Fine-tuning Qwen 2.5-1.5B for speech cleanup")
+    print("🎯 Fine-tuning Qwen 2.5-1.5B for speech cleanup + rewrite")
     print(f"   Base model:    {BASE_MODEL}")
     print(f"   Training data: {TRAIN_DATA}")
     print(f"   Iterations:    {LORA_CONFIG['iters']}")
     print(f"   LoRA rank:     {LORA_CONFIG['lora_rank']}")
-    print(f"   LoRA layers:   {LORA_CONFIG['lora_layers']}")
+    print(f"   LoRA layers:   {LORA_CONFIG['num_layers']}")
 
     num_examples = sum(1 for _ in open(TRAIN_DATA))
     print(f"   Examples:      {num_examples}")
 
+    write_lora_config()
+
     # Step 1: Train LoRA adapters
     train_cmd = [
-        sys.executable, "-m", "mlx_lm.lora",
+        sys.executable, "-m", "mlx_lm", "lora",
         "--model", BASE_MODEL,
         "--train",
         "--data", str(SCRIPT_DIR),
@@ -68,14 +92,14 @@ def main():
         "--iters", str(LORA_CONFIG["iters"]),
         "--learning-rate", str(LORA_CONFIG["learning_rate"]),
         "--batch-size", str(LORA_CONFIG["batch_size"]),
-        "--lora-layers", str(LORA_CONFIG["lora_layers"]),
-        "--lora-rank", str(LORA_CONFIG["lora_rank"]),
+        "--num-layers", str(LORA_CONFIG["num_layers"]),
+        "-c", str(CONFIG_FILE),
     ]
     run_cmd(train_cmd, "Training LoRA adapters")
 
     # Step 2: Fuse adapters into a standalone model
     fuse_cmd = [
-        sys.executable, "-m", "mlx_lm.fuse",
+        sys.executable, "-m", "mlx_lm", "fuse",
         "--model", BASE_MODEL,
         "--adapter-path", str(ADAPTER_DIR),
         "--save-path", str(FUSED_DIR),
