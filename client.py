@@ -489,19 +489,21 @@ def mlx_worker():
                 print(f"📄 Raw Transcription ({request.get('source', 'Unknown')}): {result.get('text', '').strip()}")
 
                 segments = result.get("segments", [])
-                
-                # Industry-standard segment-level filtering
-                # Filter out segments that are likely silence or noise (high no_speech_prob)
-                # or very low confidence (low avg_logprob)
+
+                # Segment-level filtering: reject segments that are silence/noise
                 valid_segments = []
                 for s in segments:
                     no_speech = s.get("no_speech_prob", 0)
                     confidence = s.get("avg_logprob", -1)
-                    # Tighten thresholds: Turbo is more 'confident' in hallucinations
                     if no_speech < 0.40 and confidence > -0.6:
                         valid_segments.append(s)
-                
+
                 filtered_text = " ".join([s.get("text", "").strip() for s in valid_segments])
+
+                # Fallback: if segment filter rejected everything but Whisper did produce text,
+                # use the raw transcription — let the hallucination list be the gatekeeper
+                if not filtered_text.strip() and result.get("text", "").strip():
+                    filtered_text = result["text"].strip()
                 
                 # Re-calculate confidence based on valid segments
                 if valid_segments:
@@ -880,8 +882,20 @@ def command_flush_remaining():
     if len(audio_data) > max_samples:
         audio_data = audio_data[:max_samples]
 
-    rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+    # Use peak RMS (loudest 0.5s window) instead of full-buffer RMS
+    # This prevents short phrases from being rejected when surrounded by silence
     min_energy = int(get_config_setting("min_speech_energy", "250"))
+    window_samples = int(SAMPLE_RATE * 0.5)
+    if len(audio_data) > window_samples:
+        max_rms = 0
+        for i in range(0, len(audio_data) - window_samples, window_samples // 2):
+            chunk = audio_data[i:i + window_samples]
+            chunk_rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
+            max_rms = max(max_rms, chunk_rms)
+        rms = max_rms
+    else:
+        rms = np.sqrt(np.mean(audio_data.astype(np.float64) ** 2))
+
     if rms < min_energy:
         _is_processing = False
         return
