@@ -590,14 +590,16 @@ def mlx_worker():
                             "You are a transcription corrector. Fix grammar, punctuation, and self-corrections.\n\n"
                             "RULES:\n"
                             "1. Resolve self-corrections (e.g., 'let's meet at 2... no 3' becomes 'Let's meet at 3').\n"
-                            "2. Maintain the user's original tone. Do not make it more formal or 'professional'.\n"
-                            "3. Output ONLY the corrected text. No explanations."
+                            "2. Preserve ALL details and information. Do not summarize or omit anything.\n"
+                            "3. Maintain the user's original tone. Do not make it more formal.\n"
+                            "4. Output ONLY the corrected text. No explanations."
                         )},
                         {"role": "user", "content": f"{history_context}Text: {raw_text}"}
                     ]
                     prompt = _llm_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=150, temp=0.1)
+                    # Increased to 1000 to prevent cutoffs in long paragraphs
+                    response = generate(_llm_model, _llm_tokenizer, prompt=prompt, max_tokens=1000, temp=0.1)
 
                     # Handle multiple potential end tags
                     for stop_tag in ["<|im_end|>", "<|end|>", "<|endoftext|>"]:
